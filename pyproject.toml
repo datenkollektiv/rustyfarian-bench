@@ -1,0 +1,32 @@
+[project]
+name = "rustyfarian-bench"
+version = "0.1.0"
+description = "Guided, rerunnable hardware bench tests for the rustyfarian ESP32 crates"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+requires-python = ">=3.12"
+dependencies = ["pyserial>=3.5"]
+
+[project.scripts]
+rustyfarian-bench = "rustyfarian_bench.cli:main"
+
+[dependency-groups]
+dev = ["mypy>=1.13", "pytest>=8.3", "ruff>=0.8", "types-pyserial>=3.5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
