@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Timed waits show a shrinking countdown, and an armed `duration` step's prompt accepts a different length in seconds for that run.
+- `--unattended` runs only the steps that need no person (implies `--yes`) and `--attended` only those that do; steps that need a person without a `confirm` set `attended = true`, and results record the `mode`.
 
 ## [0.2.0] - 2026-11-07
 

@@ -54,3 +54,57 @@ def test_detect_without_espflash_warns_and_exits_1(
 
     assert cli.main(["detect"]) == 1
     assert "cargo install espflash" in capsys.readouterr().out
+
+
+def _capture_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[runner.Options]:
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {}, ())
+    seen: list[runner.Options] = []
+    real_init = runner.Session.__init__
+
+    def spy(self: runner.Session, c: BenchConfig, opts: runner.Options) -> None:
+        seen.append(opts)
+        real_init(self, c, opts)
+
+    monkeypatch.setattr(config, "load", lambda repo: cfg)
+    monkeypatch.setattr(BenchConfig, "find", lambda self, target: ())
+    monkeypatch.setattr(runner.Session, "__init__", spy)
+    monkeypatch.setattr(runner.Session, "run", lambda self, scenarios, first_example: "pass")
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("flags", "mode", "assume_yes"),
+    [
+        ([], None, False),
+        (["-y"], None, True),
+        (["--unattended"], "unattended", True),
+        (["--attended"], "attended", False),
+        (["--attended", "-y"], "attended", True),
+    ],
+)
+def test_run_mode_flags_reach_the_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    mode: str | None,
+    assume_yes: bool,
+) -> None:
+    seen = _capture_options(tmp_path, monkeypatch)
+
+    assert cli.main(["--repo", str(tmp_path), "run", "s3", *flags]) == 0
+
+    (opts,) = seen
+    assert opts.mode == mode
+    assert opts.assume_yes is assume_yes
+
+
+def test_unattended_and_attended_are_mutually_exclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _capture_options(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--repo", str(tmp_path), "run", "s3", "--unattended", "--attended"])
+
+    assert exc.value.code == 2
+    assert seen == []

@@ -14,6 +14,7 @@ timeline
     section Near term
         Result traceability : results record the consumer git revision, dirty flag and scenario hash
         Cross-repo recipe : `just bench repo target` runs a sibling consumer's checks from this checkout
+        Unattended and attended runs : --unattended runs every step the log can judge, --attended only the steps that need a person
         Parallel sessions : a session holds its port exclusively and detection skips ports another session holds, so two boards bench side by side
         ws2812 S3 bench : S3 pulse and rainbow plus C3 colours, comet and frame sweep in rustyfarian-ws2812, two chips to learn on
     section Mid term

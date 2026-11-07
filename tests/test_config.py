@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rustyfarian_bench.config import BenchConfig, ConfigError, load
+from rustyfarian_bench.config import BenchConfig, ConfigError, Step, load
 
 BENCH = """
 [commands]
@@ -114,7 +114,14 @@ def load_scenario(repo: Path, text: str, bench: str = BENCH) -> BenchConfig:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("optional", '"false"'), ("optional", "1"), ("arm", '"true"'), ("arm", "0")],
+    [
+        ("optional", '"false"'),
+        ("optional", "1"),
+        ("arm", '"true"'),
+        ("arm", "0"),
+        ("attended", '"true"'),
+        ("attended", "1"),
+    ],
 )
 def test_bool_fields_reject_non_bool(tmp_path: Path, field: str, value: str) -> None:
     with pytest.raises(ConfigError, match=field):
@@ -379,3 +386,18 @@ def test_board_serial_settings_are_read(tmp_path: Path, reset: str) -> None:
 def test_board_serial_settings_rejected(tmp_path: Path, line: str, field: str) -> None:
     with pytest.raises(ConfigError, match=rf"s3\.{field}"):
         load_scenario(tmp_path, scenario('expect = "a"'), BENCH + line + "\n")
+
+
+def test_attended_parses_and_defaults_to_false(tmp_path: Path) -> None:
+    text = scenario('expect = "a"', "attended = true") + '[[step]]\nsay = "t"\nexpect = "b"\n'
+    cfg = load_scenario(tmp_path, text)
+
+    first, second = cfg.scenarios[0].steps
+    assert first.attended is True
+    assert second.attended is False
+
+
+def test_needs_person_for_confirm_attended_and_plain_expect() -> None:
+    assert Step(say="s", confirm="ok?").needs_person
+    assert Step(say="s", expect=("a",), attended=True).needs_person
+    assert not Step(say="s", expect=("a",)).needs_person

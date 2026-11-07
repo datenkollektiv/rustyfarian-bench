@@ -56,6 +56,8 @@ class Step:
     - `optional`: a miss is reported as a warning, not a failure.
     - `arm`: wait for Enter and drop the backlog before the step starts (default);
       `false` for steps that must read what the reset already printed.
+    - `attended`: the step needs a person although it has no `confirm` (a PIR, a button);
+      `--unattended` skips it and `--attended` keeps it.
     """
 
     say: str
@@ -67,6 +69,11 @@ class Step:
     confirm: str | None = None
     optional: bool = False
     arm: bool = True
+    attended: bool = False
+
+    @property
+    def needs_person(self) -> bool:
+        return self.confirm is not None or self.attended
 
 
 @dataclass(frozen=True)
@@ -201,6 +208,7 @@ def _parse_step(raw: Any, where: str) -> Step:
         "confirm",
         "optional",
         "arm",
+        "attended",
     }
     unknown = set(raw) - known
     if unknown:
@@ -242,6 +250,7 @@ def _parse_step(raw: Any, where: str) -> Step:
         confirm=confirm,
         optional=_bool(raw, "optional", False, where),
         arm=_bool(raw, "arm", True, where),
+        attended=_bool(raw, "attended", False, where),
     )
 
 

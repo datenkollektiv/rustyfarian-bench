@@ -697,7 +697,9 @@ def test_results_row_keeps_every_old_key(tmp_path: Path, monkeypatch: pytest.Mon
 def test_session_verdict_precedence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdicts: list[str], expected: str
 ) -> None:
-    session, scenario, _ = _setup(tmp_path, monkeypatch, (), yes=True)
+    # run_example is faked, but a scenario with no steps would be dropped as unselected.
+    steps = (Step(say="x", expect=("a",)),)
+    session, scenario, _ = _setup(tmp_path, monkeypatch, steps, yes=True)
     scenario = replace(scenario, examples=tuple(f"e{i}" for i in range(len(verdicts))))
     it = iter(verdicts)
 
@@ -842,3 +844,148 @@ def test_duration_step_without_a_prompt_keeps_the_scenario_length(
 
     assert prompts == []
     assert durations == [None]
+
+
+def _mixed(tmp_path: Path) -> Scenario:
+    steps = (
+        Step(say="boot", expect=("a",)),
+        Step(say="look", confirm="ok?"),
+        Step(say="wave", expect=("b",), attended=True),
+        Step(say="settle", expect=("c",)),
+    )
+    return Scenario("mix", Board("s3", "esp32s3", "S3"), ("ex",), steps, tmp_path / "mix.toml")
+
+
+def test_steps_for_selects_per_mode_and_keeps_order(tmp_path: Path) -> None:
+    sc = _mixed(tmp_path)
+
+    assert runner.steps_for(sc, None) == sc.steps
+    assert [s.say for s in runner.steps_for(sc, "unattended")] == ["boot", "settle"]
+    assert [s.say for s in runner.steps_for(sc, "attended")] == ["look", "wave"]
+
+
+class _ModeRun:
+    def __init__(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenarios: tuple[Scenario, ...],
+        mode: runner.Mode | None,
+    ) -> None:  # fmt: skip
+        board = scenarios[0].board
+        cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"s3": board}, scenarios)
+        self.judged: list[str] = []
+        self.totals: list[int] = []
+        self.built: list[str] = []
+        self.flashed: list[str] = []
+        self.devices = 0
+        self.warnings: list[str] = []
+
+        def fake_run(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
+            if "port" not in subst:  # the build; the flash command also passes the port
+                self.built.append(subst["example"])
+            else:
+                self.flashed.append(subst["example"])
+            return True
+
+        def fake_run_step(
+            step: Step, lines: object, ask: object, duration: float | None = None
+        ) -> StepResult:
+            self.judged.append(step.say)
+            return StepResult(step.say, True, "ok")
+
+        def fake_device(session: runner.Session, s: Scenario) -> Device:
+            self.devices += 1
+            return Device("/dev/x", "esp32s3", None)
+
+        monkeypatch.setattr(runner, "_run", fake_run)
+        monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: FakeLines())
+        monkeypatch.setattr(runner, "run_step", fake_run_step)
+        monkeypatch.setattr(runner.Session, "_device_for", fake_device)
+        monkeypatch.setattr(ui, "step", lambda n, total, say: self.totals.append(total))
+        monkeypatch.setattr(ui, "warn", self.warnings.append)
+        opts = runner.Options(repo=tmp_path, assume_yes=True, mode=mode)
+        self.session = runner.Session(cfg, opts)
+
+
+def test_attended_mode_runs_only_the_steps_that_need_a_person(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    m = _ModeRun(tmp_path, monkeypatch, (_mixed(tmp_path),), "attended")
+
+    outcome = m.session.run(m.session.cfg.scenarios, None)
+
+    assert m.judged == ["look", "wave"]
+    assert m.totals == [2, 2]
+    (result,) = m.session.results
+    assert [s.say for s in result.steps] == ["look", "wave"]
+    assert result.detail == "2/2 steps passed"
+    assert outcome == "pass"
+
+
+def test_unattended_mode_runs_only_the_other_steps_and_can_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    m = _ModeRun(tmp_path, monkeypatch, (_mixed(tmp_path),), "unattended")
+
+    outcome = m.session.run(m.session.cfg.scenarios, None)
+
+    assert m.judged == ["boot", "settle"]
+    assert m.totals == [2, 2]
+    assert m.session.results[0].detail == "2/2 steps passed"
+    assert outcome == "pass"
+
+
+def test_a_scenario_without_selected_steps_is_not_built_flashed_or_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = Board("s3", "esp32s3", "S3")
+    logs_only = Scenario(
+        "sweep", board, ("sweep_ex",), (Step(say="x", expect=("a",)),), tmp_path / "sweep.toml"
+    )
+    mixed = _mixed(tmp_path)
+    m = _ModeRun(tmp_path, monkeypatch, (logs_only, mixed), "attended")
+    prompts: list[str] = []
+    monkeypatch.setattr(runner.Session, "ask", lambda self, q, default=True: prompts.append(q))
+
+    m.session.run((logs_only, mixed), None)
+
+    assert m.built == ["ex"]
+    assert m.flashed == ["ex"]
+    assert m.devices == 1
+    assert prompts == []  # no "Next check: s3/sweep?" for a dropped scenario
+    assert [r.scenario for r in m.session.results] == ["mix"]
+    assert {r["scenario"] for r in _rows(tmp_path)} == {"mix"}
+
+
+def test_an_empty_selection_fails_and_names_the_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = Board("s3", "esp32s3", "S3")
+    logs_only = Scenario(
+        "sweep", board, ("ex",), (Step(say="x", expect=("a",)),), tmp_path / "sweep.toml"
+    )
+    m = _ModeRun(tmp_path, monkeypatch, (logs_only,), "attended")
+
+    outcome = m.session.run((logs_only,), None)
+
+    assert outcome == "fail"
+    assert any("attended" in w for w in m.warnings)
+    assert m.built == [] and m.devices == 0 and m.session.results == []
+    assert not (tmp_path / "bench/s3/results.jsonl").exists()
+
+
+@pytest.mark.parametrize("mode", ["unattended", "attended", None])
+def test_the_mode_lands_in_every_results_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: runner.Mode | None
+) -> None:
+    m = _ModeRun(tmp_path, monkeypatch, (_mixed(tmp_path),), mode)
+
+    m.session.run(m.session.cfg.scenarios, None)
+
+    assert [r["mode"] for r in _rows(tmp_path)] == [mode]
+
+
+def test_skipped_rows_carry_the_mode_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    m = _ModeRun(tmp_path, monkeypatch, (_mixed(tmp_path),), "attended")
+
+    m.session._skip(m.session.cfg.scenarios[0], ["ex"])
+
+    assert [(r["verdict"], r["mode"]) for r in _rows(tmp_path)] == [("skipped", "attended")]
