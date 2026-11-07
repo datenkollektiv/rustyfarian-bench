@@ -32,6 +32,9 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
+        with:
+          # the key otherwise derives from .python-version, so both matrix jobs race to save the same cache
+          cache-suffix: py${{ matrix.python }}
 
       - name: Setup just
         uses: extractions/setup-just@v4
