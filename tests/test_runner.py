@@ -1033,3 +1033,128 @@ def test_only_attended_watches_can_be_ended_by_the_operator(
     assert _stop_given(tmp_path, monkeypatch, attended, yes=False)
     assert not _stop_given(tmp_path, monkeypatch, soak, yes=False)
     assert not _stop_given(tmp_path, monkeypatch, attended, yes=True)
+
+
+def test_undetected_board_with_usb_id_is_found_without_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = Board("avr", "atmega328p", "Nano", detect=False, usb_id="0403:6001")
+    scenario = Scenario("chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "c")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"avr": board}, (scenario,))
+    monkeypatch.setattr(
+        device, "wait_for_usb", lambda b: Device("/dev/cu.usbserial-AQ01L7M0", "atmega328p", None)
+    )
+    session = runner.Session(cfg, runner.Options(repo=tmp_path))
+    assert session._device_for(scenario).port == "/dev/cu.usbserial-AQ01L7M0"
+
+
+NANO_PORTS = {"A1": "/dev/cu.wchusbserial-a", "B2": "/dev/cu.wchusbserial-b"}
+
+
+def _two_nanos(tmp_path: Path) -> tuple[BenchConfig, Scenario, Scenario]:
+    """Two boards with the same chip and USB vid:pid, told apart only by serial number."""
+    a = Board("nano-a", "atmega328p", "Nano A", detect=False, usb_id="1a86:7523", usb_serial="A1")
+    b = Board("nano-b", "atmega328p", "Nano B", detect=False, usb_id="1a86:7523", usb_serial="B2")
+    look = (Step(say="look", confirm="ok?"),)
+    sa = Scenario("chk", a, ("ex",), look, tmp_path / "a")
+    sb = Scenario("chk", b, ("ex",), look, tmp_path / "b")
+    boards = {"nano-a": a, "nano-b": b}
+    return BenchConfig(tmp_path / "bench", ("true",), ("true",), boards, (sa, sb)), sa, sb
+
+
+def _usb_bus(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Both Nanos attached; returns the serial numbers `wait_for_usb` was asked for."""
+    asked: list[str] = []
+
+    def wait_for_usb(board: Board) -> Device:
+        assert board.usb_serial is not None
+        asked.append(board.usb_serial)
+        return Device(NANO_PORTS[board.usb_serial], "atmega328p", None)
+
+    def usb_ports(usb_id: str, usb_serial: str | None = None) -> list[str]:
+        return [NANO_PORTS[usb_serial]] if usb_serial else sorted(NANO_PORTS.values())
+
+    monkeypatch.setattr("rustyfarian_bench.runner.os.path.exists", lambda p: True)
+    monkeypatch.setattr(device, "usb_ports", usb_ports)
+    monkeypatch.setattr(device, "wait_for_usb", wait_for_usb)
+    return asked
+
+
+def test_a_cached_port_is_not_reused_for_a_same_chip_board_with_another_usb_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, sa, sb = _two_nanos(tmp_path)
+    _usb_bus(monkeypatch)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path))
+    assert session._device_for(sa).port == "/dev/cu.wchusbserial-a"
+    assert session._device_for(sb).port == "/dev/cu.wchusbserial-b"
+
+
+def test_a_cached_usb_port_is_reused_for_the_same_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, sa, _ = _two_nanos(tmp_path)
+    asked = _usb_bus(monkeypatch)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path))
+    session._device_for(sa)
+    session._device_for(sa)
+    assert asked == ["A1"]
+
+
+def test_a_cached_usb_port_is_dropped_once_a_second_board_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = Board("avr", "atmega328p", "Nano", detect=False, usb_id="1a86:7523")  # no serial
+    scenario = Scenario("chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "c")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"avr": board}, (scenario,))
+    attached = ["/dev/cu.wchusbserial-a"]
+
+    def wait_for_usb(b: Board) -> Device:  # the real rule: exactly one match
+        if len(attached) > 1:
+            raise device.PortRequired("2 ports match USB 1a86:7523")
+        return Device(attached[0], "atmega328p", None)
+
+    monkeypatch.setattr("rustyfarian_bench.runner.os.path.exists", lambda p: True)
+    monkeypatch.setattr(device, "usb_ports", lambda usb_id, usb_serial=None: list(attached))
+    monkeypatch.setattr(device, "wait_for_usb", wait_for_usb)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path))
+    assert session._device_for(scenario).port == "/dev/cu.wchusbserial-a"
+    attached.append("/dev/cu.wchusbserial-b")  # a second Nano is plugged in
+    with pytest.raises(device.PortRequired):
+        session._device_for(scenario)
+
+
+def test_a_cached_port_is_not_reused_when_port_names_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, scenario = _undetected(tmp_path)
+    monkeypatch.setattr("rustyfarian_bench.runner.os.path.exists", lambda p: True)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path, port="/dev/cu.usbserial-2"))
+    session.device = Device("/dev/cu.usbserial-1", "atmega328p", None)
+    assert session._device_for(scenario).port == "/dev/cu.usbserial-2"
+
+
+def test_a_detected_board_does_not_inherit_an_undetected_boards_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = Board("c6", "esp32c6", "C6")  # detect = true, no mac pinned
+    scenario = Scenario("chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "c")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"c6": board}, (scenario,))
+    monkeypatch.setattr("rustyfarian_bench.runner.os.path.exists", lambda p: True)
+    monkeypatch.setattr(
+        device, "wait_for", lambda b, port: Device("/dev/cu.usbmodem2101", "esp32c6", "f0:f5")
+    )
+    session = runner.Session(cfg, runner.Options(repo=tmp_path))
+    session.device = Device("/dev/cu.usbserial-1", "esp32c6", None)  # taken from --port
+    assert session._device_for(scenario).port == "/dev/cu.usbmodem2101"
+
+
+def test_a_cached_port_does_not_stand_in_for_a_missing_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, scenario = _undetected(tmp_path)  # no usb_id, and no --port below
+    monkeypatch.setattr("rustyfarian_bench.runner.os.path.exists", lambda p: True)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path))
+    session.device = Device("/dev/cu.usbserial-1", "atmega328p", None)
+    with pytest.raises(device.PortRequired):
+        session._device_for(scenario)

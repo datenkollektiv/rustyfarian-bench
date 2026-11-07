@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import device, ui
-from .config import BenchConfig, Scenario, Step
+from .config import BenchConfig, Board, Scenario, Step
 from .serial_lines import SerialLines
 from .steps import StepResult, run_step
 
@@ -119,9 +119,24 @@ class Session:
         finally:
             lines.echo = True
 
+    def _still_fits(self, board: Board, d: device.Device) -> bool:
+        """Whether the cached device can serve `board` without looking for it again."""
+        if not (os.path.exists(d.port) and device.matches(board, d)):
+            return False
+        # An undetected board has no MAC, so a matching chip proves nothing: two
+        # same-chip boards would share a port. Only the port it was found by counts.
+        if board.detect:
+            return d.mac is not None  # found by espflash, not by port or USB identity
+        if self.opts.port is not None:
+            return d.port == self.opts.port
+        if board.usb_id is not None:
+            # The same rule as `wait_for_usb`: exactly one match, or ask which one.
+            return device.usb_ports(board.usb_id, board.usb_serial) == [d.port]
+        return False
+
     def _device_for(self, scenario: Scenario) -> device.Device:
         d = self.device
-        if d and os.path.exists(d.port) and device.matches(scenario.board, d):
+        if d and self._still_fits(scenario.board, d):
             return d
         if scenario.board.detect:
             self.device = device.wait_for(scenario.board, self.opts.port)
@@ -130,13 +145,15 @@ class Session:
         return self.device
 
     def _undetected(self, scenario: Scenario) -> device.Device:
-        """A board with `detect = false`: `--port` is required.
+        """A board with `detect = false`: found by its `usb_id`, else `--port` is required.
 
         Never runs espflash. A lone attached port is no proof of which board it is,
-        so nothing is guessed.
+        so nothing is guessed; a USB identity is.
         """
         board = scenario.board
         port = self.opts.port
+        if port is None and board.usb_id is not None:
+            return device.wait_for_usb(board)
         if port is None:
             raise device.PortRequired(f"{board.name} cannot be detected; pick its port with --port")
         ui.info(f"Using {port} for {board.name} (not detected: {board.chip})")

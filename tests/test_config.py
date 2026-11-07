@@ -401,3 +401,23 @@ def test_needs_person_for_confirm_attended_and_plain_expect() -> None:
     assert Step(say="s", confirm="ok?").needs_person
     assert Step(say="s", expect=("a",), attended=True).needs_person
     assert not Step(say="s", expect=("a",)).needs_person
+
+
+def test_board_usb_identity_is_parsed(tmp_path: Path) -> None:
+    bench = BENCH + 'detect = false\nusb_id = "0403:6001"\nusb_serial = "AQ01L7M0"\n'
+    board = load(write(tmp_path, {"bench.toml": bench, "s3/b3f.toml": B3F})).boards["s3"]
+    assert (board.usb_id, board.usb_serial) == ("0403:6001", "AQ01L7M0")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        'detect = false\nusb_id = "403:6001"\n',
+        'detect = false\nusb_serial = "AQ01L7M0"\n',
+        'usb_id = "0403:6001"\n',
+    ],
+    ids=["bad-format", "serial-without-id", "usb-on-a-detected-board"],
+)
+def test_board_usb_identity_is_checked(tmp_path: Path, extra: str) -> None:
+    with pytest.raises(ConfigError, match="usb_"):
+        load(write(tmp_path, {"bench.toml": BENCH + extra, "s3/b3f.toml": B3F}))

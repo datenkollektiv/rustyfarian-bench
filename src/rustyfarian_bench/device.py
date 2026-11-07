@@ -119,6 +119,52 @@ def matches(board: Board, device: Device) -> bool:
     return board.mac is None or device.mac == board.mac.lower()
 
 
+def usb_ports(usb_id: str, usb_serial: str | None = None) -> list[str]:
+    """Ports whose USB `vid:pid` (and serial number, if given) match; on macOS the cu.* twin."""
+    vid, pid = (int(part, 16) for part in usb_id.split(":"))
+    found = []
+    for p in list_ports.comports():
+        if p.vid != vid or p.pid != pid:
+            continue
+        if usb_serial is not None and p.serial_number != usb_serial:
+            continue
+        if p.device.startswith("/dev/tty.") and os.path.exists(
+            p.device.replace("/dev/tty.", "/dev/cu.")
+        ):
+            continue
+        found.append(p.device)
+    return sorted(found)
+
+
+def wait_for_usb(
+    board: Board,
+    poll: float = 0.25,
+    ports_fn: Callable[[str, str | None], list[str]] = usb_ports,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> Device:
+    """Block until exactly one port carries the board's USB identity; Ctrl-C aborts.
+
+    Never runs espflash. Several matches raise `PortRequired`: a serial number
+    (`usb_serial`) or `--port` must tell them apart.
+    """
+    assert board.usb_id is not None
+    asked = False
+    while True:
+        ports = ports_fn(board.usb_id, board.usb_serial)
+        if len(ports) == 1:
+            info(f"Detected {board.name} on {ports[0]} (USB {board.usb_id})")
+            return Device(port=ports[0], chip=normalize_chip(board.chip), mac=None)
+        if len(ports) > 1:
+            raise PortRequired(
+                f"{len(ports)} ports match USB {board.usb_id} ({', '.join(ports)}); "
+                "set usb_serial for the board or pass --port"
+            )
+        if not asked:
+            info(f"Please plug in the test device: {board.name} (USB {board.usb_id})")
+            asked = True
+        sleep_fn(poll)
+
+
 SLEEP_HINT = (
     "No ESP answers on the port. If the board is in deep sleep (native USB is off while it "
     "sleeps), put it in download mode: hold BOOT, tap RESET, release BOOT. Or replug it."
