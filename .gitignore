@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 dist/
 review-queue/
-.claude/settings.local.json
+.claude/
+CLAUDE.md
+memory/
 tmp/
 release/
