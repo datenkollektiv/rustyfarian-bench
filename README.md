@@ -74,6 +74,11 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
    Timed waits show a shrinking countdown on a terminal; an armed `duration` step's prompt shows its length, where Enter keeps it and a typed number of seconds changes it for this run (the step detail records `(scenario: N s)`).
 6. Offer the scenario's next example (e.g. the `idf` twin), then append the result to `bench/<board>/results.jsonl`; an example you asked for (everything but the twins of a named example) that you decline is recorded as `skipped`.
 
+`--unattended` runs only the steps that need no person (no `confirm`, no `attended = true`) and implies `--yes`; `--attended` runs only the steps that need one.
+A scenario with no step for the mode is not built, flashed or recorded, and a run with nothing left fails.
+Each result records its `mode` (`"unattended"`, `"attended"` or `null`), so a pass in one mode is never read as a full pass.
+To wrap up a release, run `just bench <board> --unattended` and walk away, then `just bench <board> --attended`; the release needs both to pass.
+
 The runner never uses `espflash monitor` (without a TTY it leaves a USB-JTAG chip in the flash stub) or `espflash reset` (it enters the bootloader first and leaves a native-USB S3 in download mode).
 
 ## Consumer layout
@@ -132,7 +137,7 @@ Each step has `say` and exactly one of:
 | `duration` | `reject` never matches and the serial link stays up for that many seconds |
 | `confirm`  | the operator answers yes                                                  |
 
-Modifiers: `reject` (fails the step on match), `settle` (keep watching `reject` after the last `expect`), `optional` (a miss is a warning).
+Modifiers: `reject` (fails the step on match), `settle` (keep watching `reject` after the last `expect`), `optional` (a miss is a warning), `attended` (the step needs a person although it has no `confirm`, e.g. a PIR or a button press).
 `expect` steps also see lines printed before the step started (e.g. the boot banner); `duration` steps only judge new lines.
 
 The definition is checked strictly when it loads, before anything is built:

@@ -14,7 +14,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     cfg = config.load(args.repo)
     target = f"{args.target}/{args.check}" if args.check else args.target
     scenarios = cfg.find(target)
-    opts = Options(repo=args.repo, port=args.port, build=not args.no_build, assume_yes=args.yes)
+    opts = Options(
+        repo=args.repo,
+        port=args.port,
+        build=not args.no_build,
+        assume_yes=args.yes or args.unattended,
+        mode="unattended" if args.unattended else "attended" if args.attended else None,
+    )
     try:
         outcome = Session(cfg, opts).run(scenarios, first_example=target)
     except KeyboardInterrupt:
@@ -63,6 +69,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument(
         "-y", "--yes", action="store_true", help="answer every prompt with its default"
     )
+    modes = run.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--unattended",
+        action="store_true",
+        help="run only steps that need no person; implies --yes",
+    )
+    modes.add_argument("--attended", action="store_true", help="run only steps that need a person")
     run.set_defaults(func=_cmd_run)
 
     sub.add_parser("list", help="list scenarios").set_defaults(func=_cmd_list)

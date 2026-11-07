@@ -8,11 +8,22 @@ import subprocess
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from . import device, ui
-from .config import BenchConfig, Scenario
+from .config import BenchConfig, Scenario, Step
 from .serial_lines import SerialLines
 from .steps import StepResult, run_step
+
+Mode = Literal["unattended", "attended"]
+
+
+def steps_for(scenario: Scenario, mode: Mode | None) -> tuple[Step, ...]:
+    """The steps a run in `mode` covers; `None` covers all of them."""
+    if mode is None:
+        return scenario.steps
+    wanted = mode == "attended"
+    return tuple(s for s in scenario.steps if s.needs_person == wanted)
 
 
 @dataclass
@@ -28,6 +39,7 @@ class ExampleResult:
     verdict: str = "error"
     detail: str = ""
     steps: list[StepResult] = field(default_factory=list)
+    mode: Mode | None = None
 
 
 @dataclass
@@ -36,6 +48,7 @@ class Options:
     port: str | None = None
     build: bool = True
     assume_yes: bool = False
+    mode: Mode | None = None
 
 
 def _run(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
@@ -149,6 +162,7 @@ class Session:
                 started=datetime.now().isoformat(timespec="seconds"),
                 verdict="skipped",
                 detail="declined by the operator",
+                mode=self.opts.mode,
             )
             self._record(scenario, r)
             self.results.append(r)
@@ -158,8 +172,16 @@ class Session:
 
         error > fail > incomplete > unverified > pass. A requested example the operator
         declined is recorded as skipped and makes the run incomplete. An empty run is a
-        fail, never a pass.
+        fail, never a pass. Scenarios with no step for the mode are dropped up front, so
+        they are never built, flashed, prompted for or recorded.
         """
+        mode = self.opts.mode
+        selected = tuple(s for s in scenarios if steps_for(s, mode))
+        if scenarios and not selected:
+            ui.warn(f"nothing to run {mode}: no {mode} steps in the selected checks")
+            self.summary()
+            return "fail"
+        scenarios = selected
         for n, scenario in enumerate(scenarios):
             examples, requested = self._plan(scenario, first_example)
             if n > 0 and not self.ask(f"Next check: {scenario.board.key}/{scenario.name}?"):
@@ -186,6 +208,7 @@ class Session:
             scenario=scenario.name,
             board=scenario.board.key,
             started=stamp.isoformat(timespec="seconds"),
+            mode=self.opts.mode,
         )
         ui.heading(f"{scenario.board.key}/{scenario.name}: {example}")
         try:
@@ -225,8 +248,9 @@ class Session:
         r.log = str(log.relative_to(self.opts.repo))
         # Resets into the app on open, as the board's `reset` says.
         with SerialLines(d.port, log, baud=board.baud, reset=board.reset) as lines:
-            total = len(scenario.steps)
-            for n, step in enumerate(scenario.steps, 1):
+            selected = steps_for(scenario, self.opts.mode)
+            total = len(selected)
+            for n, step in enumerate(selected, 1):
                 while True:
                     ui.step(n, total, step.say)
                     seconds: float | None = None
@@ -258,7 +282,7 @@ class Session:
 
         failed = [s for s in r.steps if s.failed]
         unverified = [s for s in r.steps if s.unverified]
-        complete = len(r.steps) == len(scenario.steps)
+        complete = len(r.steps) == len(selected)
         if failed or not complete:
             r.verdict = "fail"
         else:
@@ -266,7 +290,7 @@ class Session:
             required = any(not s.optional for s in unverified)
             r.verdict = "unverified" if required else "pass"
         passed = len(r.steps) - len(failed) - len(unverified)
-        r.detail = f"{passed}/{len(scenario.steps)} steps passed"
+        r.detail = f"{passed}/{len(selected)} steps passed"
         if unverified:
             r.detail += f", {len(unverified)} unverified"
 
