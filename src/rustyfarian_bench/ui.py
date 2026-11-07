@@ -174,6 +174,13 @@ def ready_duration(msg: str, seconds: float) -> float:
             value = float(answer)
         except ValueError:
             value = math.nan
-        if math.isfinite(value) and value > 0:
+        if not (math.isfinite(value) and value > 0):
+            warn(f"enter a positive number of seconds, or just Enter for {seconds:g}")
+            continue
+        # Ctrl-C ends the whole session, so a typo like 600 for 60 would cost a restart.
+        if value <= seconds or ask(f"Watch {_span(value)} instead of {_span(seconds)}?", False):
             return value
-        warn(f"enter a positive number of seconds, or just Enter for {seconds:g}")
+
+
+def _span(seconds: float) -> str:
+    return f"{seconds:g} s ({seconds / 60:.0f} min)" if seconds >= 120 else f"{seconds:g} s"
