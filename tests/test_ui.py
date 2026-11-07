@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import unicodedata
 from collections.abc import Iterator
@@ -15,8 +16,10 @@ CLEAR = "\r\033[K"
 @pytest.fixture(autouse=True)
 def _reset_status() -> Iterator[None]:
     ui._status = None
+    ui._title = None
     yield
     ui._status = None
+    ui._title = None
 
 
 def _inputs(monkeypatch: pytest.MonkeyPatch, *answers: str | type[EOFError]) -> list[str]:
@@ -197,3 +200,68 @@ def test_progress_done_is_safe_when_nothing_is_shown(
     ui.progress_done()
     assert ui._status is None
     assert capsys.readouterr().out == ""
+
+
+UP = "\033[1A\033[K"
+
+
+def test_the_step_instruction_is_pinned_above_the_countdown(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.step(1, 2, "Watch the ring")
+    capsys.readouterr()
+    ui.progress(5, 10)
+    status = capsys.readouterr().out
+    title_at, bar_at = status.index("▶ [1/2] Watch the ring"), status.index("5 s left")
+    assert title_at < status.index("\n") < bar_at
+    assert not status.endswith("\n")
+
+
+def test_a_device_line_scrolls_above_both_pinned_rows(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.step(1, 2, "Watch the ring")
+    ui.progress(5, 10)
+    capsys.readouterr()
+    ui.device_line("boot: entry 0x4086c11a")
+    out = capsys.readouterr().out
+    assert out.startswith(CLEAR + UP)  # both rows erased before the line
+    line_at = out.index("boot: entry")
+    assert out.index("▶ [1/2] Watch the ring", line_at) < out.index("5 s left", line_at)
+
+
+def test_progress_done_erases_both_pinned_rows(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.step(1, 2, "Watch the ring")
+    ui.progress(5, 10)
+    capsys.readouterr()
+    ui.progress_done()
+    assert capsys.readouterr().out == CLEAR + UP
+
+
+def test_the_pinned_instruction_fits_a_narrow_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda: os.terminal_size((30, 24)))
+    ui.step(1, 2, "Watch the ring: all 12 LEDs breathe blue together, dark to dim and back")
+    capsys.readouterr()
+    ui.progress(5, 10)
+    rows = capsys.readouterr().out.removeprefix(CLEAR).split("\n")
+    assert len(rows) == 2
+    assert all(_cells(re.sub(r"\033\[[0-9;]*m", "", row)) <= 28 for row in rows)
+
+
+def test_a_heading_unpins_the_instruction(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.step(1, 2, "Watch the ring")
+    ui.heading("s3/pulse: hal_s3_pulse")
+    capsys.readouterr()
+    ui.progress(5, 10)
+    assert "\n" not in capsys.readouterr().out

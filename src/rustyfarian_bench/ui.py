@@ -15,19 +15,27 @@ _CLEAR = "\r\033[K"
 
 # Device lines are printed from the serial reader thread, so the status line needs a lock.
 _lock = threading.Lock()
-_status: str | None = None
+_status: str | None = None  # the pinned rows at the bottom, drawn without a final newline
+# The current step's instruction, pinned above the countdown so device output cannot
+# scroll it away.
+_title: str | None = None
 
 
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _TTY else text
 
 
+def _erase(status: str) -> str:
+    """The escapes that clear `status`, leaving the cursor where its first row began."""
+    return _CLEAR + "\033[1A\033[K" * status.count("\n")
+
+
 def _emit(text: str) -> None:
-    """Print above the status line: clear it, print, redraw it."""
+    """Print above the status rows: clear them, print, redraw them."""
     with _lock:
         shown = _status is not None and _TTY
         if shown:
-            sys.stdout.write(_CLEAR)
+            sys.stdout.write(_erase(_status or ""))
         print(text, flush=True)
         if shown:
             sys.stdout.write(_status or "")
@@ -43,7 +51,9 @@ def warn(msg: str) -> None:
 
 
 def step(n: int, total: int, msg: str) -> None:
-    _emit(_c("1", f"\n▶ [{n}/{total}] {msg}"))
+    global _title
+    _title = f"▶ [{n}/{total}] {msg}"
+    _emit(_c("1", f"\n{_title}"))
 
 
 def device_line(line: str) -> None:
@@ -66,6 +76,8 @@ def verdict(
 
 
 def heading(msg: str) -> None:
+    global _title
+    _title = None
     _emit(_c("1;35", f"\n=== {msg} ==="))
 
 
@@ -90,15 +102,18 @@ def progress(left: float, total: float, label: str = "") -> None:
     text = "  ⏱ " + "█" * remaining + "░" * (_BAR - remaining) + f"  {math.ceil(left)} s left"
     if label:
         text += f" — {label}"
-    # A wrapped status line cannot be cleared with \r, so keep it to one row; the spare
+    # A wrapped row cannot be cleared row by row, so each row must fit; the spare
     # cell is for ⏱, which some terminals draw 2 wide.
-    text = _fit(text, shutil.get_terminal_size().columns - 2)
+    columns = shutil.get_terminal_size().columns - 2
+    text = _fit(text, columns)
+    if _title:
+        text = _c("1", _fit(_title, columns)) + "\n" + text
     with _lock:
         if text == _status:
             return
-        _status = text
-        sys.stdout.write(_CLEAR + text)
+        sys.stdout.write((_erase(_status) if _status is not None else _CLEAR) + text)
         sys.stdout.flush()
+        _status = text
 
 
 def progress_done() -> None:
@@ -106,7 +121,7 @@ def progress_done() -> None:
     global _status
     with _lock:
         if _status is not None and _TTY:
-            sys.stdout.write(_CLEAR)
+            sys.stdout.write(_erase(_status))
             sys.stdout.flush()
         _status = None
 
