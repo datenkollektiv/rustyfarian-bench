@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Timed waits show a shrinking countdown, and an armed `duration` step's prompt accepts a different length in seconds for that run.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added

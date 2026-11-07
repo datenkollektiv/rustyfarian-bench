@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import os
+import shutil
+import unicodedata
+from collections.abc import Iterator
+
+import pytest
+
+from rustyfarian_bench import ui
+
+CLEAR = "\r\033[K"
+
+
+@pytest.fixture(autouse=True)
+def _reset_status() -> Iterator[None]:
+    ui._status = None
+    yield
+    ui._status = None
+
+
+def _inputs(monkeypatch: pytest.MonkeyPatch, *answers: str | type[EOFError]) -> list[str]:
+    """Feed `answers` to input(); returns the prompts it was shown."""
+    it = iter(answers)
+    prompts: list[str] = []
+
+    def fake_input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        answer = next(it)
+        if isinstance(answer, str):
+            return answer
+        raise answer
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    return prompts
+
+
+def test_ready_duration_enter_keeps_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts = _inputs(monkeypatch, "")
+    assert ui.ready_duration("rotate", 10) == 10.0
+    assert "10 s" in prompts[0]
+
+
+def test_ready_duration_accepts_a_number(monkeypatch: pytest.MonkeyPatch) -> None:
+    _inputs(monkeypatch, "20")
+    assert ui.ready_duration("rotate", 10) == 20.0
+
+
+def test_ready_duration_junk_warns_and_reprompts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prompts = _inputs(monkeypatch, "abc", "15")
+    assert ui.ready_duration("rotate", 10) == 15.0
+    assert len(prompts) == 2
+    assert capsys.readouterr().out.strip() != ""
+
+
+@pytest.mark.parametrize("bad", ["0", "-3", "nan", "inf"])
+def test_ready_duration_rejects_non_positive_and_non_finite(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    prompts = _inputs(monkeypatch, bad, "7")
+    assert ui.ready_duration("rotate", 10) == 7.0
+    assert len(prompts) == 2
+
+
+def test_ready_duration_eof_keeps_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _inputs(monkeypatch, EOFError)
+    assert ui.ready_duration("rotate", 12.5) == 12.5
+
+
+def test_progress_is_silent_without_a_tty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", False)
+    ui.progress(5, 10)
+    ui.progress_done()
+    assert capsys.readouterr().out == ""
+
+
+def test_progress_bar_has_20_cells_and_shrinks(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.progress(10, 10)
+    full = capsys.readouterr().out
+    ui.progress(0, 10)
+    empty = capsys.readouterr().out
+    assert full.count("█") == 20 and full.count("░") == 0
+    assert empty.count("█") == 0 and empty.count("░") == 20
+    assert "10 s left" in full
+    assert "\n" not in full
+
+
+def _cells(text: str) -> int:
+    return sum(
+        2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        for ch in text
+        if not unicodedata.combining(ch)
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "columns", "fitted"),
+    [
+        ("abcdef", 4, "abcd"),
+        ("漢字漢字", 5, "漢字"),
+        ("a🔥b", 2, "a"),
+        ("e\u0301e\u0301", 1, "e\u0301"),
+        ("short", 80, "short"),
+    ],
+)
+def test_fit_counts_terminal_cells(text: str, columns: int, fitted: str) -> None:
+    assert ui._fit(text, columns) == fitted
+
+
+@pytest.mark.parametrize(
+    "label", ["waiting for '温度センサー準備完了'", "waiting for '🔥🔥🔥🔥🔥🔥'"]
+)
+def test_progress_with_wide_characters_never_wraps_a_narrow_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], label: str
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda: os.terminal_size((40, 24)))
+    ui.progress(5, 10, label)
+    status = capsys.readouterr().out.removeprefix(CLEAR)
+    assert status.startswith("  ⏱ ")
+    assert _cells(status) <= 38
+
+
+def test_progress_redraws_only_when_the_text_changes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.progress(9.5, 10)
+    first = capsys.readouterr().out
+    ui.progress(9.5, 10)
+    ui.progress(9.5, 10)
+    assert first != ""
+    assert capsys.readouterr().out == ""
+
+
+def test_device_line_is_written_above_the_status_which_is_redrawn(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.progress(5, 10)
+    capsys.readouterr()
+    ui.device_line("hello")
+    out = capsys.readouterr().out
+    assert out.startswith(CLEAR)
+    line_at = out.index("hello")
+    assert line_at > 0
+    assert "█" in out[line_at:]
+    assert "5 s left" in out[line_at:]
+
+
+def test_progress_done_clears_the_status(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", True)
+    ui.progress(5, 10)
+    capsys.readouterr()
+    ui.progress_done()
+    assert capsys.readouterr().out == CLEAR
+    assert ui._status is None
+    ui.device_line("later")
+    assert "█" not in capsys.readouterr().out
+
+
+def test_progress_done_is_safe_when_nothing_is_shown(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(ui, "_TTY", False)
+    ui.progress_done()
+    assert ui._status is None
+    assert capsys.readouterr().out == ""

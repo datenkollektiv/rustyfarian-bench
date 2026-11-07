@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from . import ui
 from .config import Step
 from .serial_lines import LineSource
 
@@ -35,16 +36,25 @@ def _watch(
     """Watch for `seconds`; return ("reject", line) or ("lost", "") on the first problem."""
     t0 = time.monotonic()
     deadline = t0 + seconds
-    while (left := deadline - time.monotonic()) > 0:
-        line = lines.get(min(left, 0.2))
-        if line is not None and reject is not None and reject.search(line):
-            return "reject", line
-        if lines.link_lost_since(t0):
-            return "lost", ""
+    try:
+        while (left := deadline - time.monotonic()) > 0:
+            ui.progress(left, seconds)
+            line = lines.get(min(left, 0.2))
+            if line is not None and reject is not None and reject.search(line):
+                return "reject", line
+            if lines.link_lost_since(t0):
+                return "lost", ""
+    finally:
+        ui.progress_done()
     return None
 
 
-def run_step(step: Step, lines: LineSource, ask: Callable[[str], bool | None]) -> StepResult:
+def run_step(
+    step: Step,
+    lines: LineSource,
+    ask: Callable[[str], bool | None],
+    duration: float | None = None,
+) -> StepResult:
     reject = re.compile(step.reject) if step.reject else None
 
     def result(ok: bool, detail: str) -> StepResult:
@@ -61,37 +71,46 @@ def run_step(step: Step, lines: LineSource, ask: Callable[[str], bool | None]) -
     if step.duration is not None:
         # Watch-only steps judge what happens from now on, not the backlog.
         lines.drain()
-        bad = _watch(lines, reject, step.duration)
+        seconds = step.duration if duration is None else duration
+        # An operator-chosen length is recorded next to the scenario's, so results stay comparable.
+        suffix = f" (scenario: {step.duration:g} s)" if seconds != step.duration else ""
+        bad = _watch(lines, reject, seconds)
         if bad is not None:
             kind, seen = bad
             return result(
-                False, "serial connection lost" if kind == "lost" else f"rejected line: {seen!r}"
+                False,
+                ("serial connection lost" if kind == "lost" else f"rejected line: {seen!r}")
+                + suffix,
             )
         if step.reject is None:
-            return result(True, f"watched for {step.duration:g} s")
-        return result(True, f"no {step.reject!r} for {step.duration:g} s")
+            return result(True, f"watched for {seconds:g} s{suffix}")
+        return result(True, f"no {step.reject!r} for {seconds:g} s{suffix}")
 
     # Expect steps consume the backlog, so a banner printed during reset still counts.
     patterns = [re.compile(p) for p in step.expect]
     index = 0
     started = time.monotonic()
     deadline = started + step.timeout
-    while index < len(patterns):
-        left = deadline - time.monotonic()
-        if left <= 0:
-            detail = f"timeout after {step.timeout:g} s waiting for {step.expect[index]!r}"
-            if lines.link_lost_since(started):
-                detail += " (serial connection lost)"
-            return result(False, detail)
-        line = lines.get(min(left, 0.2))
-        if line is None:
-            continue
-        # The expected line wins over `reject`, so a scenario can reject the very
-        # event it expects when it arrives out of order or once too often.
-        if patterns[index].search(line):
-            index += 1
-        elif reject is not None and reject.search(line):
-            return result(False, f"rejected line: {line!r}")
+    try:
+        while index < len(patterns):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                detail = f"timeout after {step.timeout:g} s waiting for {step.expect[index]!r}"
+                if lines.link_lost_since(started):
+                    detail += " (serial connection lost)"
+                return result(False, detail)
+            ui.progress(left, step.timeout, f"waiting for {step.expect[index]!r}")
+            line = lines.get(min(left, 0.2))
+            if line is None:
+                continue
+            # The expected line wins over `reject`, so a scenario can reject the very
+            # event it expects when it arrives out of order or once too often.
+            if patterns[index].search(line):
+                index += 1
+            elif reject is not None and reject.search(line):
+                return result(False, f"rejected line: {line!r}")
+    finally:
+        ui.progress_done()
 
     if step.settle > 0:
         bad = _watch(lines, reject, step.settle)

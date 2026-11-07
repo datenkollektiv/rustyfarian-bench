@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from rustyfarian_bench.config import Step
 from rustyfarian_bench.steps import StepResult, run_step
 
@@ -204,3 +206,35 @@ def test_watch_without_reject_says_what_it_did() -> None:
     step = Step(say="watch", duration=0.01)
     res = run_step(step, FakeLines(), never)
     assert res.ok and res.detail == "watched for 0.01 s"
+
+
+def test_duration_override_watches_the_chosen_length_and_notes_the_scenario_one() -> None:
+    step = Step(say="rotate", duration=0.3, reject="pressed")
+    res = run_step(step, FakeLines(), never, duration=0.1)
+    assert res.ok
+    assert "0.1 s" in res.detail
+    assert res.detail.endswith("(scenario: 0.3 s)")
+
+
+@pytest.mark.parametrize("override", [None, 0.3])
+def test_duration_override_equal_to_the_scenario_has_no_suffix(override: float | None) -> None:
+    step = Step(say="rotate", duration=0.3, reject="pressed")
+    res = run_step(step, FakeLines(), never, duration=override)
+    assert res.ok
+    assert "scenario" not in res.detail
+
+
+def test_duration_override_suffix_is_on_failures_too() -> None:
+    step = Step(say="rotate", duration=0.3, reject="pressed")
+    lines = FakeLines()
+    lines.on_get = lambda: lines.queue.append("t=1 pressed")  # arrives after the drain
+    res = run_step(step, lines, never, duration=0.1)
+    assert not res.ok
+    assert res.detail.endswith("(scenario: 0.3 s)")
+
+
+def test_duration_override_is_ignored_by_expect_steps() -> None:
+    step = Step(say="press", expect=("count=3",), timeout=0.3)
+    res = run_step(step, FakeLines(*PRESSES), never, duration=0.1)
+    assert res.ok
+    assert "scenario" not in res.detail
