@@ -54,6 +54,10 @@ typecheck:
 act *args:
     act -j verify --pull=false -P ubuntu-latest=catthehacker/ubuntu:act-latest {{ args }}
 
+# remove scratch files, build output and tool caches; keeps .venv and release/
+clean:
+    cd "{{ justfile_directory() }}" && rm -rf tmp dist .pytest_cache .mypy_cache .ruff_cache
+
 # re-lock dependencies after a pyproject.toml change (e.g. a version bump)
 lock:
     uv lock
