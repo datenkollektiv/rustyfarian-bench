@@ -67,6 +67,8 @@ def run_step(step: Step, lines: LineSource, ask: Callable[[str], bool | None]) -
             return result(
                 False, "serial connection lost" if kind == "lost" else f"rejected line: {seen!r}"
             )
+        if step.reject is None:
+            return result(True, f"watched for {step.duration:g} s")
         return result(True, f"no {step.reject!r} for {step.duration:g} s")
 
     # Expect steps consume the backlog, so a banner printed during reset still counts.

@@ -33,6 +33,10 @@ class MissingTool(RuntimeError):
     """A required external program cannot be run; no later example can fare better."""
 
 
+class PortRequired(RuntimeError):
+    """An undetected board's port cannot be inferred; only `--port` can settle it."""
+
+
 def missing_tool(tool: str, e: OSError) -> MissingTool:
     """Build the one-line message for a `tool` that is absent or not executable."""
     msg = f"cannot run {tool!r} ({e.strerror or e})"

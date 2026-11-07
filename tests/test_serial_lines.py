@@ -8,6 +8,7 @@ import pytest
 import serial
 
 from rustyfarian_bench import serial_lines
+from rustyfarian_bench.config import ResetMode
 from rustyfarian_bench.serial_lines import DOWNLOAD_HINT, SerialLines, download_hint
 
 from .fakes import FakeSerialWorld, ScriptItem, shrink_sleep, wait_until
@@ -33,7 +34,10 @@ def test_normal_boot_and_app_lines_yield_nothing() -> None:
 
 
 def make(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, world: FakeSerialWorld, reset: bool = False
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    world: FakeSerialWorld,
+    reset: ResetMode = "none",
 ) -> SerialLines:
     shrink_sleep(monkeypatch)
     world.install(monkeypatch)
@@ -74,7 +78,7 @@ def test_hard_reset_runs_once_across_reconnects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     world = FakeSerialWorld([serial.SerialException("re-enumerated")], [])
-    with make(tmp_path, monkeypatch, world, reset=True):
+    with make(tmp_path, monkeypatch, world, reset="rts"):
         assert wait_until(world.exhausted.is_set)
     pulses = [sum(e == "rts=True" for e in s.events) for s in world.opened]
     assert pulses[0] == 1
@@ -106,7 +110,7 @@ def test_reset_reenumeration_within_grace_is_not_a_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     world = FakeSerialWorld([serial.SerialException("re-enumerated")], [b"banner\n"])
-    with make(tmp_path, monkeypatch, world, reset=True) as sl:
+    with make(tmp_path, monkeypatch, world, reset="rts") as sl:
         t0 = time.monotonic()
         assert sl.get(2.0) == "banner"
         assert not sl.link_lost_since(t0)
@@ -126,7 +130,7 @@ def test_reset_reenumeration_still_open_within_grace_is_not_a_loss(
     world = FakeSerialWorld(present=False)
     world.paths.add(PORT)
     world.scripts.append([unplug(world)])
-    with make(tmp_path, monkeypatch, world, reset=True) as sl:
+    with make(tmp_path, monkeypatch, world, reset="rts") as sl:
         t0 = time.monotonic()
         assert wait_until(lambda: PORT not in world.paths)
         assert not sl.link_lost_since(t0)  # port still gone, but inside the reset's grace
@@ -139,7 +143,7 @@ def test_reset_outage_still_open_after_grace_is_a_loss(
     world = FakeSerialWorld(present=False)
     world.paths.add(PORT)
     world.scripts.append([unplug(world)])
-    with make(tmp_path, monkeypatch, world, reset=True) as sl:
+    with make(tmp_path, monkeypatch, world, reset="rts") as sl:
         t0 = time.monotonic()
         assert wait_until(lambda: sl.link_lost_since(t0))  # the board never came back
 
@@ -152,7 +156,7 @@ def test_loss_after_grace_is_counted(tmp_path: Path, monkeypatch: pytest.MonkeyP
         threading.Event().wait(0.2)
 
     world = FakeSerialWorld([pause, serial.SerialException("unplugged")], [])
-    with make(tmp_path, monkeypatch, world, reset=True) as sl:
+    with make(tmp_path, monkeypatch, world, reset="rts") as sl:
         t0 = time.monotonic()
         assert wait_until(world.exhausted.is_set)
         assert sl.link_lost_since(t0)
@@ -220,3 +224,26 @@ def test_exit_joins_thread_and_is_not_a_loss(
         assert sl.get(2.0) == "a"
     assert not sl._thread.is_alive()
     assert not sl.link_lost_since(t0)
+
+
+@pytest.mark.parametrize(
+    ("mode", "toggled", "untouched"),
+    [("dtr", "dtr=True", "rts=True"), ("rts", "rts=True", "dtr=True"), ("none", None, "dtr=True")],
+)
+def test_reset_mode_picks_the_line_that_pulses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: ResetMode,
+    toggled: str | None,
+    untouched: str,
+) -> None:
+    world = FakeSerialWorld([])
+    with make(tmp_path, monkeypatch, world, reset=mode):
+        assert wait_until(world.exhausted.is_set)
+    events = world.opened[0].events
+    assert events[0] == "open dtr=False rts=False"
+    assert untouched not in events
+    if toggled:
+        assert events.count(toggled) == 1
+    else:
+        assert not any(e.startswith(("dtr=", "rts=")) for e in events)

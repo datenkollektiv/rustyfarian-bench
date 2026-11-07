@@ -322,3 +322,60 @@ def test_distinct_names_in_board_checks_load(tmp_path: Path) -> None:
     cfg = load_scenario(tmp_path, scenario('expect = "a"'), BENCH + 'checks = ["c"]\n')
 
     assert [s.name for s in cfg.scenarios] == ["c"]
+
+
+@pytest.mark.parametrize(
+    ("line", "field"),
+    [
+        ('build = ["just", "{porrt}"]', "build"),
+        ('build = ["just", "{port}"]', "build"),
+        ("build = []", "build"),
+        ('flash = ["f", "{chip}"]', "flash"),
+        ("flash = []", "flash"),
+    ],
+)
+def test_board_command_placeholders_validated_at_load(
+    tmp_path: Path, line: str, field: str
+) -> None:
+    with pytest.raises(ConfigError, match=rf"s3\.{field}"):
+        load_scenario(tmp_path, scenario('expect = "a"'), BENCH + line + "\n")
+
+
+def test_board_commands_override_the_global_ones(tmp_path: Path) -> None:
+    bench = BENCH + 'build = ["just", "build-avr-bin", "{example}"]\ndetect = false\n'
+    cfg = load(write(tmp_path, {"bench.toml": bench, "s3/b3f.toml": B3F}))
+    board = cfg.boards["s3"]
+    assert board.build == ("just", "build-avr-bin", "{example}")
+    assert board.flash == ()
+    assert board.detect is False
+    assert cfg.build_for(board) == ("just", "build-avr-bin", "{example}")
+    assert cfg.flash_for(board) == cfg.flash
+
+
+def test_board_serial_settings_default_to_rts_at_115200(tmp_path: Path) -> None:
+    board = load_scenario(tmp_path, scenario('expect = "a"')).boards["s3"]
+    assert (board.baud, board.reset) == (115_200, "rts")
+
+
+@pytest.mark.parametrize("reset", ["rts", "dtr", "none"])
+def test_board_serial_settings_are_read(tmp_path: Path, reset: str) -> None:
+    bench = BENCH + f'baud = 57600\nreset = "{reset}"\n'
+    board = load_scenario(tmp_path, scenario('expect = "a"'), bench).boards["s3"]
+    assert (board.baud, board.reset) == (57_600, reset)
+
+
+@pytest.mark.parametrize(
+    ("line", "field"),
+    [
+        ("baud = 0", "baud"),
+        ("baud = -9600", "baud"),
+        ("baud = true", "baud"),
+        ('baud = "9600"', "baud"),
+        ("baud = 9600.0", "baud"),
+        ('reset = "usb"', "reset"),
+        ("reset = true", "reset"),
+    ],
+)
+def test_board_serial_settings_rejected(tmp_path: Path, line: str, field: str) -> None:
+    with pytest.raises(ConfigError, match=rf"s3\.{field}"):
+        load_scenario(tmp_path, scenario('expect = "a"'), BENCH + line + "\n")

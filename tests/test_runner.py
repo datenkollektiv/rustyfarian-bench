@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from rustyfarian_bench import runner, ui
+from rustyfarian_bench import device, runner, ui
 from rustyfarian_bench.config import BenchConfig, Board, Scenario, Step
 from rustyfarian_bench.device import Device
 from rustyfarian_bench.steps import StepResult
@@ -32,7 +32,7 @@ def test_assume_yes_does_not_retry_a_failed_step(
         return StepResult(step.say, False, "nope")
 
     monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
-    monkeypatch.setattr(runner, "SerialLines", lambda port, log: FakeLines())
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: FakeLines())
     monkeypatch.setattr(runner, "run_step", fake_run_step)
     monkeypatch.setattr(
         runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32s3", None)
@@ -61,7 +61,7 @@ def test_device_echo_is_muted_while_a_question_is_open(
         return True
 
     monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
-    monkeypatch.setattr(runner, "SerialLines", lambda port, log: lines)
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: lines)
     monkeypatch.setattr(ui, "ask", fake_ask)
     monkeypatch.setattr(
         runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32c3", None)
@@ -92,7 +92,7 @@ def test_armed_steps_wait_for_enter_and_drop_the_backlog(
 
     lines = Lines()
     monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
-    monkeypatch.setattr(runner, "SerialLines", lambda port, log: lines)
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: lines)
     monkeypatch.setattr(ui, "ready", lambda msg: events.append(f"ready:{msg}"))
     monkeypatch.setattr(
         runner, "run_step", lambda step, lines, ask: StepResult(step.say, True, "ok")
@@ -123,7 +123,7 @@ def test_a_failed_step_records_the_operator_note(
         return "only one LED pulsed"
 
     monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
-    monkeypatch.setattr(runner, "SerialLines", lambda port, log: lines)
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: lines)
     monkeypatch.setattr(ui, "ask", lambda question, default: False)
     monkeypatch.setattr(ui, "note", fake_note)
     monkeypatch.setattr(
@@ -152,7 +152,7 @@ def test_assume_yes_does_not_ask_for_a_note(
         raise AssertionError("asked for a note under -y")
 
     monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
-    monkeypatch.setattr(runner, "SerialLines", lambda port, log: FakeLines())
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: FakeLines())
     monkeypatch.setattr(
         runner, "run_step", lambda step, lines, ask: StepResult(step.say, False, "nope")
     )
@@ -180,7 +180,7 @@ def _session(
     )
     cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"s3": board}, (scenario,))
     monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
-    monkeypatch.setattr(runner, "SerialLines", lambda port, log: lines)
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: lines)
     monkeypatch.setattr(
         runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32s3", None)
     )
@@ -566,7 +566,7 @@ def _setup(
         return True
 
     monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
-    monkeypatch.setattr(runner, "SerialLines", lambda port, log: FakeLines("hello", "hello"))
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: FakeLines("hello", "hello"))
     monkeypatch.setattr(ui, "ask", fake_ask)
     monkeypatch.setattr(
         runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32s3", None)
@@ -689,3 +689,74 @@ def test_session_verdict_precedence(
     monkeypatch.setattr(runner.Session, "run_example", fake_example)
 
     assert session.run((scenario,), None) == expected
+
+
+def _undetected(tmp_path: Path) -> tuple[BenchConfig, Scenario]:
+    board = Board("avr", "atmega328p", "Nano", detect=False)
+    scenario = Scenario(
+        "chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "chk.toml"
+    )
+    return BenchConfig(
+        tmp_path / "bench", ("true",), ("true",), {"avr": board}, (scenario,)
+    ), scenario
+
+
+def test_undetected_board_uses_the_given_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg, scenario = _undetected(tmp_path)
+
+    def no_wait(*a: object, **k: object) -> Device:
+        raise AssertionError("probed a board with detect = false")
+
+    monkeypatch.setattr(device, "wait_for", no_wait)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path, port="/dev/cu.usbserial-1"))
+    d = session._device_for(scenario)
+    assert (d.port, d.chip, d.mac) == ("/dev/cu.usbserial-1", "atmega328p", None)
+
+
+@pytest.mark.parametrize(
+    "ports", [[], ["/dev/cu.usbserial-9"], ["/dev/a", "/dev/b"]], ids=["none", "one", "several"]
+)
+def test_undetected_board_needs_port_and_stops_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ports: list[str]
+) -> None:
+    cfg, scenario = _undetected(tmp_path)
+    monkeypatch.setattr(device, "candidate_ports", lambda: ports)
+
+    def no_probe(*a: object, **k: object) -> object:
+        raise AssertionError("probed a board with detect = false")
+
+    monkeypatch.setattr(device, "probe", no_probe)
+    monkeypatch.setattr(device, "wait_for", no_probe)
+    monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path, assume_yes=True))
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "error"
+    assert "--port" in result.detail
+    assert "espflash" not in result.detail
+    assert session.stopped
+
+
+def test_serial_settings_come_from_the_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = Board("avr", "atmega328p", "Nano", detect=False, baud=57_600, reset="dtr")
+    scenario = Scenario(
+        "chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "chk.toml"
+    )
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"avr": board}, (scenario,))
+    seen: dict[str, object] = {}
+
+    def fake_lines(port: str, log: Path, **kw: object) -> FakeLines:
+        seen.update(kw)
+        return FakeLines()
+
+    monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
+    monkeypatch.setattr(runner, "SerialLines", fake_lines)
+    session = runner.Session(cfg, runner.Options(repo=tmp_path, port="/dev/x", assume_yes=True))
+    session.run_example(scenario, "ex")
+
+    assert seen == {"baud": 57_600, "reset": "dtr"}

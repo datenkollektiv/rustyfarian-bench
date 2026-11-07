@@ -20,7 +20,7 @@ def _held_by_someone_else(fd: int) -> bool:
 def test_reader_holds_the_port_exclusively(tmp_path: Path) -> None:
     master, slave = os.openpty()
     try:
-        with SerialLines(os.ttyname(slave), tmp_path / "log", echo=False, reset=False):
+        with SerialLines(os.ttyname(slave), tmp_path / "log", echo=False, reset="none"):
             deadline = time.monotonic() + 2
             while not _held_by_someone_else(slave) and time.monotonic() < deadline:
                 time.sleep(0.02)

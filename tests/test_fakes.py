@@ -29,7 +29,7 @@ def test_fake_world_scripts_one_entry_per_open(
     world = FakeSerialWorld([b"ab", b"c\r\n", SerialException("gone")], [b"d\n"])
     world.install(monkeypatch)
     shrink_sleep(monkeypatch)
-    with SerialLines("/dev/fake", tmp_path / "log", echo=False, reset=False) as lines:
+    with SerialLines("/dev/fake", tmp_path / "log", echo=False, reset="none") as lines:
         assert lines.get(2) == "abc"
         assert lines.get(2) == "d"
         assert wait_until(world.exhausted.is_set)

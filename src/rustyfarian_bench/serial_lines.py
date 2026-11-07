@@ -17,6 +17,7 @@ from typing import IO, Protocol
 import serial
 
 from . import ui
+from .config import ResetMode
 
 
 class LineSource(Protocol):
@@ -59,12 +60,13 @@ class SerialLines:
         log_path: Path,
         baud: int = 115_200,
         echo: bool = True,
-        reset: bool = True,
+        reset: ResetMode = "rts",
     ):
         self.port = port
         self.baud = baud
         self.echo = echo
-        self._reset_pending = reset
+        self._reset_mode = reset
+        self._reset_pending = reset != "none"
         self._hinted = False
         # Outages as [start, end]; end is None while the link is down. The reader
         # starts out disconnected.
@@ -174,7 +176,7 @@ class SerialLines:
                             self._ignore_before = time.monotonic() + RESET_GRACE
                     self._mark_connected()
                     if resetting:
-                        _hard_reset(s)
+                        (_dtr_reset if self._reset_mode == "dtr" else _hard_reset)(s)
                     while not self._stop.is_set():
                         chunk = s.read(256)
                         if not chunk:
@@ -204,4 +206,13 @@ def _hard_reset(s: serial.Serial) -> None:
     s.rts = True
     time.sleep(0.2)
     s.rts = False
+    time.sleep(0.2)
+
+
+def _dtr_reset(s: serial.Serial) -> None:
+    """Pulse DTR, which classic auto-reset bridges (CH340, FT232) couple to RESET."""
+    s.rts = False
+    s.dtr = True
+    time.sleep(0.1)
+    s.dtr = False
     time.sleep(0.2)
