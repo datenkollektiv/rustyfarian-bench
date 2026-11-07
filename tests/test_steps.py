@@ -238,3 +238,49 @@ def test_duration_override_is_ignored_by_expect_steps() -> None:
     res = run_step(step, FakeLines(*PRESSES), never, duration=0.1)
     assert res.ok
     assert "scenario" not in res.detail
+
+
+def test_attended_watch_ends_early_when_the_operator_stops_it() -> None:
+    step = Step(say="watch", duration=30, reject="PANIC", attended=True)
+    t0 = time.monotonic()
+    res = run_step(step, FakeLines(), never, stop=lambda: True)
+    assert res.ok
+    assert res.detail.startswith("ended by operator after 0 s of 30 s")
+    assert time.monotonic() - t0 < 5
+
+
+def test_a_reject_before_the_stop_still_fails_the_watch() -> None:
+    step = Step(say="watch", duration=30, reject="PANIC", attended=True)
+    lines = FakeLines()
+    polls = iter([False, True])
+
+    def feed() -> None:
+        if lines.on_get is not None:
+            lines.queue.append("PANIC: boom")
+            lines.on_get = None
+
+    lines.on_get = feed
+    res = run_step(step, lines, never, stop=lambda: next(polls, True))
+    assert not res.ok
+    assert "PANIC: boom" in res.detail
+
+
+def test_a_reject_queued_behind_the_stop_still_fails_the_watch() -> None:
+    step = Step(say="watch", duration=30, reject="PANIC", attended=True)
+    lines = FakeLines()
+
+    def feed() -> None:  # after the step's drain: both lines arrive before Enter
+        if lines.on_get is not None:
+            lines.queue.extend(["normal", "PANIC: boom"])
+            lines.on_get = None
+
+    lines.on_get = feed
+    res = run_step(step, lines, never, stop=lambda: True)
+    assert not res.ok
+    assert "PANIC: boom" in res.detail
+
+
+def test_an_early_stop_notes_a_changed_scenario_length() -> None:
+    step = Step(say="watch", duration=60, attended=True)
+    res = run_step(step, FakeLines(), never, duration=30, stop=lambda: True)
+    assert res.ok and res.detail.endswith("(scenario: 60 s)")

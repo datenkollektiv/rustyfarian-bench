@@ -265,8 +265,18 @@ class Session:
                             else:
                                 self._ready_quietly(lines, step.say)
                         lines.drain()
+                    # An attended watch ends early on Enter: the operator has seen enough.
+                    stop = (
+                        ui.enter_pressed
+                        if step.attended and step.duration is not None and not self.opts.assume_yes
+                        else None
+                    )
                     res = run_step(
-                        step, lines, lambda q: self._ask_quietly(lines, q), duration=seconds
+                        step,
+                        lines,
+                        lambda q: self._ask_quietly(lines, q),
+                        duration=seconds,
+                        stop=stop,
                     )
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
                     # `-y` must not retry: answering its default (yes) would loop forever.
