@@ -42,15 +42,16 @@ def test_ready_duration_enter_keeps_the_default(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_ready_duration_accepts_a_number(monkeypatch: pytest.MonkeyPatch) -> None:
-    _inputs(monkeypatch, "20")
-    assert ui.ready_duration("rotate", 10) == 20.0
+    prompts = _inputs(monkeypatch, "4")
+    assert ui.ready_duration("rotate", 10) == 4.0
+    assert len(prompts) == 1  # shorter needs no confirmation
 
 
 def test_ready_duration_junk_warns_and_reprompts(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    prompts = _inputs(monkeypatch, "abc", "15")
-    assert ui.ready_duration("rotate", 10) == 15.0
+    prompts = _inputs(monkeypatch, "abc", "5")
+    assert ui.ready_duration("rotate", 10) == 5.0
     assert len(prompts) == 2
     assert capsys.readouterr().out.strip() != ""
 
@@ -62,6 +63,27 @@ def test_ready_duration_rejects_non_positive_and_non_finite(
     prompts = _inputs(monkeypatch, bad, "7")
     assert ui.ready_duration("rotate", 10) == 7.0
     assert len(prompts) == 2
+
+
+def test_ready_duration_confirms_a_longer_watch(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts = _inputs(monkeypatch, "600", "y")
+    assert ui.ready_duration("rotate", 60) == 600.0
+    assert "600 s (10 min) instead of 60 s" in prompts[1]
+
+
+@pytest.mark.parametrize("declined", ["n", ""])  # the confirmation defaults to no
+def test_ready_duration_declined_longer_watch_reprompts(
+    monkeypatch: pytest.MonkeyPatch, declined: str
+) -> None:
+    prompts = _inputs(monkeypatch, "600", declined, "")
+    assert ui.ready_duration("rotate", 60) == 60.0
+    assert len(prompts) == 3
+
+
+def test_ready_duration_same_length_needs_no_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts = _inputs(monkeypatch, "60")
+    assert ui.ready_duration("rotate", 60) == 60.0
+    assert len(prompts) == 1
 
 
 def test_ready_duration_eof_keeps_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
