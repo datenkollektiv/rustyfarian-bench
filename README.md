@@ -67,7 +67,7 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
 
 1. Build the example (`commands.build`, or the board's own `build`), so the slow part runs before the board is needed.
 2. Poll serial ports and run `espflash board-info` on each until the board's chip (and optional MAC) answers; a port another session holds is skipped, so two boards can bench side by side (pin `mac` when two boards share a chip: the lock is only held while a session reads its port).
-   A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash; it always needs `--port` (a lone attached port is no proof of which board it is), and the run stops without it.
+   A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash; it is found by its USB identity when it declares `usb_id = "vid:pid"` (plus `usb_serial` to tell two identical bridges apart), else it needs `--port` (a lone attached port is no proof of which board it is), and the run stops without it.
 3. Flash (`commands.flash`, or the board's own `flash`, with `{port}`).
 4. Open the port exclusively with DTR/RTS deasserted, reset into the app, and read it with pyserial, reopening across USB re-enumeration. The reset is an RTS pulse (esptool's USB-JTAG sequence) by default; `reset = "dtr"` pulses DTR for auto-reset bridges (Arduino Nano, CH340/FT232) and `"none"` skips it; `baud` is per board. Every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
 5. Run the steps; each step waits for Enter and drops the backlog before its clock starts (`arm = false` for a step that must read what the reset printed, e.g. the banner); a failed step offers a retry, then asks what the operator saw and records it as the step's `note`.
@@ -109,7 +109,8 @@ name = "CrowPanel 1.28\" HMI (ESP32-S3)"
 [boards.avr]
 chip = "atmega328p"
 name = "Arduino Nano"
-detect = false                                  # espflash cannot identify it; --port is required
+detect = false                                  # espflash cannot identify it
+usb_id = "0403:6001"                            # found by USB identity instead (FTDI FT232R)
 reset = "dtr"                                    # auto-reset bridge; default "rts", or "none"
 # baud = 115200
 build = ["just", "build-avr-bin", "{example}"]  # per-board commands override [commands]

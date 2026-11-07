@@ -187,3 +187,50 @@ def test_probe_without_a_runnable_espflash_raises_missing_tool(
     with pytest.raises(device_mod.MissingTool, match=r"cannot run 'espflash'") as info:
         device_mod.probe("/dev/x")
     assert ("cargo install espflash" in str(info.value)) is hint
+
+
+class _Port:
+    def __init__(self, device: str, vid: int | None, pid: int | None, serial: str | None):
+        self.device, self.vid, self.pid, self.serial_number = device, vid, pid, serial
+
+
+_PORTS = [
+    _Port("/dev/cu.usbserial-AQ01L7M0", 0x0403, 0x6001, "AQ01L7M0"),
+    _Port("/dev/tty.usbserial-AQ01L7M0", 0x0403, 0x6001, "AQ01L7M0"),
+    _Port("/dev/cu.usbserial-0001", 0x10C4, 0xEA60, "0001"),
+    _Port("/dev/cu.usbserial-B", 0x0403, 0x6001, "OTHER"),
+]
+
+
+def test_usb_ports_match_vid_pid_and_prefer_cu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("serial.tools.list_ports.comports", lambda: _PORTS)
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    assert device_mod.usb_ports("0403:6001") == [
+        "/dev/cu.usbserial-AQ01L7M0",
+        "/dev/cu.usbserial-B",
+    ]
+    assert device_mod.usb_ports("0403:6001", "AQ01L7M0") == ["/dev/cu.usbserial-AQ01L7M0"]
+    assert device_mod.usb_ports("1a86:7523") == []
+
+
+def _usb_board(serial: str | None = None) -> Board:
+    return Board("avr", "atmega328p", "Nano", detect=False, usb_id="0403:6001", usb_serial=serial)
+
+
+def test_wait_for_usb_waits_until_the_board_appears() -> None:
+    seen = iter([[], [], ["/dev/cu.usbserial-AQ01L7M0"]])
+    sleeps: list[float] = []
+    d = device_mod.wait_for_usb(
+        _usb_board(), ports_fn=lambda usb_id, serial: next(seen), sleep_fn=sleeps.append
+    )
+    assert (d.port, d.chip, d.mac) == ("/dev/cu.usbserial-AQ01L7M0", "atmega328p", None)
+    assert len(sleeps) == 2
+
+
+def test_wait_for_usb_refuses_to_guess_between_matches() -> None:
+    with pytest.raises(device_mod.PortRequired, match="usb_serial"):
+        device_mod.wait_for_usb(
+            _usb_board(),
+            ports_fn=lambda usb_id, serial: ["/dev/a", "/dev/b"],
+            sleep_fn=lambda s: None,
+        )

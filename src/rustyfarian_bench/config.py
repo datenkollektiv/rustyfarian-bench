@@ -42,6 +42,10 @@ class Board:
     # Serial settings: reset via RTS (native USB), DTR (auto-reset bridges) or not at all.
     baud: int = 115_200
     reset: ResetMode = "rts"
+    # USB identity of an undetected board, `"vid:pid"` in hex, plus an optional serial number:
+    # the port is found by it, so `--port` is not needed.
+    usb_id: str | None = None
+    usb_serial: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +273,15 @@ def _parse_board(key: str, raw: Any, where: str) -> Board:
     checks = _str_tuple(raw.get("checks", []), f"{where}.checks")
     if duplicated := sorted({c for c in checks if checks.count(c) > 1}):
         raise ConfigError(f"{where}.checks: duplicate names {duplicated}")
+    detect = _bool(raw, "detect", True, where)
+    usb_id = _text(raw, "usb_id", where)
+    usb_serial = _text(raw, "usb_serial", where)
+    if usb_id is not None and not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{4}", usb_id):
+        raise ConfigError(f"{where}.usb_id: expected 'vid:pid' in hex, e.g. '0403:6001'")
+    if usb_serial is not None and usb_id is None:
+        raise ConfigError(f"{where}.usb_serial: needs usb_id")
+    if usb_id is not None and detect:
+        raise ConfigError(f"{where}.usb_id: only for boards with detect = false")
     return Board(
         key=key,
         chip=chip,
@@ -277,9 +290,11 @@ def _parse_board(key: str, raw: Any, where: str) -> Board:
         checks=checks,
         build=_board_command(raw, "build", where, {"example"}),
         flash=_board_command(raw, "flash", where, {"example", "port"}),
-        detect=_bool(raw, "detect", True, where),
+        detect=detect,
         baud=_baud(raw, where),
         reset=_reset(raw, where),
+        usb_id=None if usb_id is None else usb_id.lower(),
+        usb_serial=usb_serial,
     )
 
 
