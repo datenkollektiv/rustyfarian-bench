@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-07
+
+### Added
+
+- `detect = false` on a board skips espflash detection, for boards it cannot identify (e.g. AVR); such a board needs `--port`.
+- Per-board `build` and `flash` commands override `[commands]`, with the same placeholder checks.
+- Per-board `baud` (default 115200) and `reset = "rts" | "dtr" | "none"` (default `rts`) for the serial monitor.
+
+### Changed
+
+- A bad placeholder or empty list in a board's own `build`/`flash` is a config error at load time.
+
 ## [0.1.0] - 2026-11-07
 
 ### Added
