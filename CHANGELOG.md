@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- During a timed wait the step's instruction stays pinned above the countdown, so device output cannot scroll it away.
 - A typed watch length longer than the scenario's asks for confirmation (default no), so a typo like `600` for `60` cannot lock the operator in.
 
 ## [0.3.0] - 2026-11-07
