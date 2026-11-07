@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -303,3 +304,21 @@ confirm = "Is it green?"
     assert (b.duration, b.optional, b.reject) == (5.0, True, "pressed")
     assert c.confirm == "Is it green?"
     assert s.examples == ("a", "b")
+
+
+@pytest.mark.parametrize(
+    ("checks", "listed"),
+    [('["c", "c"]', "['c']"), ('["a", "b", "a", "b"]', "['a', 'b']")],
+)
+def test_duplicate_names_in_board_checks_are_rejected(
+    tmp_path: Path, checks: str, listed: str
+) -> None:
+    bench = BENCH + f"checks = {checks}\n"
+    with pytest.raises(ConfigError, match=r"s3.*checks.*duplicate.*" + re.escape(listed)):
+        load_scenario(tmp_path, scenario('expect = "a"'), bench)
+
+
+def test_distinct_names_in_board_checks_load(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario('expect = "a"'), BENCH + 'checks = ["c"]\n')
+
+    assert [s.name for s in cfg.scenarios] == ["c"]

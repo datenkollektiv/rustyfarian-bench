@@ -10,7 +10,8 @@ from rustyfarian_bench.config import BenchConfig
 
 
 @pytest.mark.parametrize(
-    ("outcome", "code"), [("pass", 0), ("fail", 1), ("error", 1), ("unverified", 3)]
+    ("outcome", "code"),
+    [("pass", 0), ("fail", 1), ("error", 1), ("unverified", 3), ("incomplete", 3)],
 )
 def test_run_exit_code_follows_the_session_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str, code: int

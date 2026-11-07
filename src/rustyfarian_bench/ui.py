@@ -27,8 +27,12 @@ def device_line(line: str) -> None:
     print(_c("2", f"  │ {line}"), flush=True)
 
 
-def verdict(ok: bool, msg: str, optional: bool = False, unverified: bool = False) -> None:
-    if unverified:
+def verdict(
+    ok: bool, msg: str, optional: bool = False, unverified: bool = False, skipped: bool = False
+) -> None:
+    if skipped:
+        print(_c("33", "  - SKIPPED ") + msg, flush=True)
+    elif unverified:
         print(_c("33", "  ? UNVERIFIED ") + msg, flush=True)
     elif ok:
         print(_c("32", "  ✓ ") + msg, flush=True)

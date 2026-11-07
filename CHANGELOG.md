@@ -14,8 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Consumer bench definitions as TOML under `bench/`: `bench.toml` (commands, boards) plus one scenario file per check.
 - Session flow: build, wait for the board by chip (and optional MAC), flash, RTS hard-reset, capture serial, run steps, offer the scenario's next example.
 - Step kinds `expect`, `duration` and `confirm`, with `reject`, `settle`, `optional` and `arm` modifiers.
-- Strict definition checks at load time: real TOML types, positive timeouts, compiling regexes, known command placeholders, safe example names.
-- Verdicts `pass`, `fail`, `unverified`, `error` and `aborted`, with distinct exit codes (0, 1, 2, 3, 130).
+- Strict definition checks at load time: real TOML types, positive timeouts, compiling regexes, known command placeholders, safe example names, unique board check names.
+- Verdicts `pass`, `fail`, `unverified`, `skipped`, `error` and `aborted`, with distinct exit codes (0, 1, 2, 3, 130); a declined requested example makes the run incomplete (exit 3).
 - Per-run logs in `bench/<board>/logs/` and one JSON line per example in `bench/<board>/results.jsonl`.
 - Exclusive port locking, so two boards can bench side by side.
 - `just bench <repo> <target>` and `just bench-list <repo>` to run a sibling consumer's checks from this checkout.

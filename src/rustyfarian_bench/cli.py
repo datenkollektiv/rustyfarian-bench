@@ -23,7 +23,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 130
     if outcome == "pass":
         return 0
-    return 3 if outcome == "unverified" else 1
+    return 3 if outcome in ("unverified", "incomplete") else 1
 
 
 def _cmd_list(args: argparse.Namespace) -> int:

@@ -50,6 +50,10 @@ fmt-check:
 typecheck:
     uv run --locked mypy src tests
 
+# run the CI workflow locally via act (requires Docker + act): `just act` or `just act --matrix python:3.12`
+act *args:
+    act -j verify --pull=false -P ubuntu-latest=catthehacker/ubuntu:act-latest {{ args }}
+
 # re-lock dependencies after a pyproject.toml change (e.g. a version bump)
 lock:
     uv lock

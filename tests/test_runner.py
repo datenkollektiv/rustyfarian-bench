@@ -4,10 +4,10 @@ import json
 import re
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from rustyfarian_bench import device as device_mod
 from rustyfarian_bench import runner, ui
 from rustyfarian_bench.config import BenchConfig, Board, Scenario, Step
 from rustyfarian_bench.device import Device
@@ -326,7 +326,10 @@ def test_a_missing_espflash_ends_the_run_with_one_readable_error_row(
         raise FileNotFoundError(2, "No such file or directory", "espflash")
 
     monkeypatch.setattr(runner, "_run", record_build)
-    monkeypatch.setattr(device_mod, "candidate_ports", lambda: ["/dev/x"])
+    # `wait_for` binds `candidate_ports` as a default argument, so patch what it reads;
+    # with no port listed, `wait_for` waits for a board forever (CI has none attached).
+    fake_port = SimpleNamespace(vid=None, device="/dev/ttyACM0")
+    monkeypatch.setattr("rustyfarian_bench.device.list_ports.comports", lambda: [fake_port])
     monkeypatch.setattr("rustyfarian_bench.device.os.path.exists", lambda p: True)
     monkeypatch.setattr("rustyfarian_bench.device.subprocess.run", missing)
 
@@ -338,6 +341,161 @@ def test_a_missing_espflash_ends_the_run_with_one_readable_error_row(
     assert str(row["detail"]).startswith("cannot run 'espflash'")
     assert "cargo install espflash" in str(row["detail"])
     assert outcome == "error"
+
+
+def _interactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, declined: tuple[str, ...], ok: bool = True
+) -> tuple[runner.Session, Scenario, Scenario]:
+    """A session whose operator declines every question starting with one of `declined`."""
+    session, scenario = _session(tmp_path, monkeypatch, FakeLines(), "ex1", "ex2", yes=False)
+    other = replace(scenario, name="next", examples=("ex3", "ex4"))
+    monkeypatch.setattr(ui, "ask", lambda q, default=True: not q.startswith(declined))
+    monkeypatch.setattr(ui, "ready", lambda msg: None)
+    monkeypatch.setattr(ui, "note", lambda msg: "")
+    monkeypatch.setattr(runner, "run_step", lambda step, lines, ask: StepResult(step.say, ok, "x"))
+    return session, scenario, other
+
+
+def _outcomes(tmp_path: Path) -> list[tuple[object, object]]:
+    return [(r["example"], r["verdict"]) for r in _rows(tmp_path)]
+
+
+def test_declining_the_next_check_records_its_examples_as_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, other = _interactive(tmp_path, monkeypatch, ("Next check",))
+
+    outcome = session.run((scenario, other), "s3/chk")  # a check target requests every example
+
+    assert outcome == "incomplete"
+    assert _outcomes(tmp_path) == [
+        ("ex1", "pass"),
+        ("ex2", "pass"),
+        ("ex3", "skipped"),
+        ("ex4", "skipped"),
+    ]
+    skipped = [r for r in _rows(tmp_path) if r["verdict"] == "skipped"]
+    assert [r["detail"] for r in skipped] == ["declined by the operator"] * 2
+
+
+def test_declining_an_example_of_a_requested_check_records_it_as_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, _ = _interactive(tmp_path, monkeypatch, ("Start ex2",))
+
+    outcome = session.run((scenario,), "s3/chk")
+
+    assert outcome == "incomplete"
+    assert _outcomes(tmp_path) == [("ex1", "pass"), ("ex2", "skipped")]
+
+
+def test_declining_an_offered_twin_of_a_named_example_is_not_skipped_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, _ = _interactive(tmp_path, monkeypatch, ("Start ex2",))
+
+    outcome = session.run((scenario,), "ex1")
+
+    assert outcome == "pass"
+    assert _outcomes(tmp_path) == [("ex1", "pass")]
+
+
+def test_a_fail_outranks_skipped_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session, scenario, _ = _interactive(
+        tmp_path, monkeypatch, ("Start", "Retry", "Continue"), ok=False
+    )
+
+    outcome = session.run((scenario,), "s3/chk")
+
+    assert outcome == "fail"
+    assert _outcomes(tmp_path) == [("ex1", "fail"), ("ex2", "skipped")]
+
+
+def test_a_named_example_in_two_scenarios_is_requested_in_both_but_not_its_twins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, other = _interactive(tmp_path, monkeypatch, ("Next check",))
+    second = replace(other, examples=("ex1", "ex9"))
+
+    outcome = session.run((scenario, second), "ex1")
+
+    assert outcome == "incomplete"
+    assert _outcomes(tmp_path) == [("ex1", "pass"), ("ex2", "pass"), ("ex1", "skipped")]
+
+
+def test_declining_the_twin_in_a_second_scenario_of_a_named_example_is_not_skipped_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, other = _interactive(tmp_path, monkeypatch, ("Start ex9",))
+    second = replace(other, examples=("ex1", "ex9"))
+
+    outcome = session.run((scenario, second), "ex1")
+
+    assert outcome == "pass"
+    assert _outcomes(tmp_path) == [("ex1", "pass"), ("ex2", "pass"), ("ex1", "pass")]
+
+
+def test_nothing_is_recorded_as_skipped_after_a_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, other = _interactive(tmp_path, monkeypatch, ("Next", "Start"))
+
+    def interrupted(step: Step, lines: object, ask: object) -> StepResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "run_step", interrupted)
+
+    outcome = session.run((scenario, other), "s3/chk")
+
+    assert outcome == "fail"
+    assert _outcomes(tmp_path) == [("ex1", "aborted")]
+
+
+def test_assume_yes_never_skips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session, scenario = _session(tmp_path, monkeypatch, FakeLines(), "ex1", "ex2")
+    other = replace(scenario, name="next", examples=("ex3", "ex4"))
+
+    def no_questions(*a: object, **k: object) -> bool:
+        raise AssertionError("asked")
+
+    monkeypatch.setattr(ui, "ask", no_questions)
+    monkeypatch.setattr(
+        runner, "run_step", lambda step, lines, ask: StepResult(step.say, True, "ok")
+    )
+
+    outcome = session.run((scenario, other), "s3/chk")
+
+    assert outcome == "pass"
+    assert [v for _, v in _outcomes(tmp_path)] == ["pass"] * 4
+
+
+@pytest.mark.parametrize(
+    ("verdicts", "expected"),
+    [
+        (["error", "skipped"], "error"),
+        (["unverified", "skipped"], "incomplete"),
+        (["pass", "skipped"], "incomplete"),
+        (["aborted", "skipped"], "fail"),
+    ],
+)
+def test_overall_precedence_with_skipped_work(verdicts: list[str], expected: str) -> None:
+    assert runner._overall(verdicts) == expected
+
+
+def test_summary_shows_skipped_rows_as_a_warning_not_a_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session, scenario, _ = _interactive(tmp_path, monkeypatch, ("Start ex2",))
+
+    session.run((scenario,), "s3/chk")
+
+    [line] = [ln for ln in capsys.readouterr().out.splitlines() if "declined" in ln]
+    assert "SKIPPED" in line
+    assert "✗" not in line
+
+
+def test_an_unset_verdict_is_an_error_not_a_skip() -> None:
+    assert runner.ExampleResult("e", "s", "b", "now").verdict == "error"
 
 
 def test_an_error_example_does_not_stop_the_next_one_and_the_run_is_not_a_pass(

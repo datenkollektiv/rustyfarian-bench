@@ -70,7 +70,7 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
 3. Flash (`commands.flash`, with `{port}`).
 4. Open the port exclusively with DTR/RTS deasserted, hard-reset into the app via RTS (esptool's USB-JTAG sequence), and read it with pyserial, reopening across USB re-enumeration; every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
 5. Run the steps; each step waits for Enter and drops the backlog before its clock starts (`arm = false` for a step that must read what the reset printed, e.g. the banner); a failed step offers a retry, then asks what the operator saw and records it as the step's `note`.
-6. Offer the scenario's next example (e.g. the `idf` twin), then append the result to `bench/<board>/results.jsonl`.
+6. Offer the scenario's next example (e.g. the `idf` twin), then append the result to `bench/<board>/results.jsonl`; an example you asked for (everything but the twins of a named example) that you decline is recorded as `skipped`.
 
 The runner never uses `espflash monitor` (without a TTY it leaves a USB-JTAG chip in the flash stub) or `espflash reset` (it enters the bootloader first and leaves a native-USB S3 in download mode).
 
@@ -130,6 +130,7 @@ The definition is checked strictly when it loads, before anything is built:
 - Regexes must compile.
 - Commands may use only `{example}`, plus `{port}` in `flash`.
 - `examples` must not be empty, and the names must not contain `/` or `..`.
+- A board's `checks` must not list a name twice.
 
 A lost serial link fails a `duration` or `settle` window.
 The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s), so an unplug within the first 5 s after the reset goes unnoticed by watch windows.
@@ -143,8 +144,9 @@ The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s), so an
 | `unverified` | nothing failed, but a required `confirm` was skipped by `--yes`                                  |
 | `error`      | the run broke (missing tool, crash); the detail names the cause; a missing tool ends the session |
 | `aborted`    | Ctrl-C; the session ends, later examples do not start                                            |
+| `skipped`    | the operator declined a requested example; makes the run incomplete                              |
 
-`run` exits 0 when every example passed and 3 when the only shortfall is `unverified`.
+`run` exits 0 when every example passed and 3 when the only shortfall is `unverified` or skipped work.
 It exits 1 on any fail, error or abort, 2 on a bench definition error, and 130 on Ctrl-C between examples.
 
 ## Development

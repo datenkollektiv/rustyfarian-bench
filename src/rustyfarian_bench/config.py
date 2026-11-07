@@ -219,12 +219,15 @@ def _parse_board(key: str, raw: Any, where: str) -> Board:
     if chip is None:
         raise ConfigError(f"{where}: missing 'chip'")
     name = _text(raw, "name", where)
+    checks = _str_tuple(raw.get("checks", []), f"{where}.checks")
+    if duplicated := sorted({c for c in checks if checks.count(c) > 1}):
+        raise ConfigError(f"{where}.checks: duplicate names {duplicated}")
     return Board(
         key=key,
         chip=chip,
         name=key if name is None else name,
         mac=_text(raw, "mac", where),
-        checks=_str_tuple(raw.get("checks", []), f"{where}.checks"),
+        checks=checks,
     )
 
 

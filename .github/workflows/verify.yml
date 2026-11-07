@@ -17,6 +17,8 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # the gate takes seconds; a hung test must not hold a runner for the 6 h default
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false

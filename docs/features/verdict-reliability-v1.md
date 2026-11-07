@@ -17,6 +17,8 @@ A `pass` in `results.jsonl` means the check was observed and the board was conne
 |    Strict TOML types: real bools, finite numbers, non-empty examples | `optional = "false"` must not mean true              | `bool()`/`float()` coercion       |
 |                    New verdicts `unverified` and `error` are allowed | Nothing reads `results.jsonl` expecting a closed set | Folding both into `fail`          |
 |                       Exit 3 when the only shortfall is `unverified` | CI never shows green for unobserved checks           | Exit 1; exit 0                    |
+|        Declined requested examples record `skipped`; the run exits 3 | Declining the rest must not read as a full pass      | Ignoring declines; new exit 4     |
+|            Ctrl-C or a missing tool ends the session, `--yes` or not | `--yes` must not build and flash after an abort      | Continuing to the next example    |
 |     Outages as intervals; reset blip ignored for `RESET_GRACE` (5 s) | A board that never returns still counts              | A disconnect counter              |
 | Optional confirm skipped by `--yes`: recorded, holds no verdict back | Matches what `optional` means elsewhere              | Exit 3 for an optional step       |
 
@@ -48,3 +50,4 @@ A `pass` in `results.jsonl` means the check was observed and the board was conne
 ## Session Log
 - 2026-11-07 — Feature doc created from an external reliability review
 - 2026-11-07 — Fixes 1–4 implemented TDD (161 tests); code-review follow-ups applied; hardware run pending
+- 2026-11-07 — Pre-release and first public review: Ctrl-C/missing tool end the session, declined work is `skipped` (exit 3), duplicate board checks rejected

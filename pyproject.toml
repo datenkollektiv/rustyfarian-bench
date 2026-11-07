@@ -30,3 +30,5 @@ python_version = "3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# a test still running after 60 s dumps every thread's stack, so a CI hang names itself
+faulthandler_timeout = 60

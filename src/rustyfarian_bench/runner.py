@@ -25,7 +25,7 @@ class ExampleResult:
     chip: str | None = None
     mac: str | None = None
     log: str | None = None
-    verdict: str = "skipped"
+    verdict: str = "error"
     detail: str = ""
     steps: list[StepResult] = field(default_factory=list)
 
@@ -52,8 +52,10 @@ def _overall(verdicts: list[str]) -> str:
         return "fail"
     if "error" in verdicts:
         return "error"
-    if any(v not in ("pass", "unverified") for v in verdicts):
+    if any(v not in ("pass", "unverified", "skipped") for v in verdicts):
         return "fail"
+    if "skipped" in verdicts:
+        return "incomplete"
     return "unverified" if "unverified" in verdicts else "pass"
 
 
@@ -102,19 +104,47 @@ class Session:
         self.device = device.wait_for(scenario.board, self.opts.port)
         return self.device
 
-    def run(self, scenarios: tuple[Scenario, ...], first_example: str | None) -> str:
-        """Run the scenarios and return the worst verdict: error > fail > unverified > pass.
+    @staticmethod
+    def _plan(scenario: Scenario, first_example: str | None) -> tuple[tuple[str, ...], list[str]]:
+        """The examples to offer, and the ones the operator asked for.
 
-        An empty run is a fail, never a pass.
+        An example named as the target is the only one requested; its twins are extras.
+        """
+        examples = scenario.examples
+        if first_example in examples:
+            return examples[examples.index(first_example) :], [first_example]
+        return examples, list(examples)
+
+    def _skip(self, scenario: Scenario, examples: list[str]) -> None:
+        for example in examples:
+            r = ExampleResult(
+                example=example,
+                scenario=scenario.name,
+                board=scenario.board.key,
+                started=datetime.now().isoformat(timespec="seconds"),
+                verdict="skipped",
+                detail="declined by the operator",
+            )
+            self._record(scenario, r)
+            self.results.append(r)
+
+    def run(self, scenarios: tuple[Scenario, ...], first_example: str | None) -> str:
+        """Run the scenarios and return the worst verdict.
+
+        error > fail > incomplete > unverified > pass. A requested example the operator
+        declined is recorded as skipped and makes the run incomplete. An empty run is a
+        fail, never a pass.
         """
         for n, scenario in enumerate(scenarios):
+            examples, requested = self._plan(scenario, first_example)
             if n > 0 and not self.ask(f"Next check: {scenario.board.key}/{scenario.name}?"):
+                for later in scenarios[n:]:
+                    self._skip(later, self._plan(later, first_example)[1])
                 break
-            examples = scenario.examples
-            if first_example in examples:
-                examples = examples[examples.index(first_example) :]
             for i, example in enumerate(examples):
                 if i > 0 and not self.ask(f"Start {example}?"):
+                    # Twins of a named example are extras: declining them records nothing.
+                    self._skip(scenario, [e for e in examples[i:] if e in requested])
                     break
                 self.results.append(self.run_example(scenario, example))
                 if self.stopped:
@@ -217,6 +247,7 @@ class Session:
                 r.verdict == "pass",
                 f"{r.example:28} {r.verdict:10} {r.detail}",
                 unverified=r.verdict == "unverified",
+                skipped=r.verdict == "skipped",
             )
             for s in r.steps:
                 if s.note:
