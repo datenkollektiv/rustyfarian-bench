@@ -1,0 +1,9 @@
+# Minimal consumer for `just smoke-install` and the CLI tests; never built or flashed.
+
+[commands]
+build = ["true"]
+flash = ["true", "{port}"]
+
+[boards.s3]
+chip = "esp32s3"
+name = "Smoke-test board"

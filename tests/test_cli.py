@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
-from rustyfarian_bench import cli, config, runner
+from rustyfarian_bench import cli, config, device, runner
 from rustyfarian_bench.config import BenchConfig
 
 
@@ -31,3 +32,24 @@ def test_run_exit_code_is_2_for_a_config_error(
     monkeypatch.setattr(config, "load", bad)
 
     assert cli.main(["--repo", str(tmp_path), "run", "s3", "-y"]) == 2
+
+
+def test_list_prints_the_smoke_fixture(capsys: pytest.CaptureFixture[str]) -> None:
+    # `just smoke-install` runs `list` against this fixture; keep the two in step.
+    repo = Path(__file__).parent / "fixtures" / "consumer"
+
+    assert cli.main(["--repo", str(repo), "list"]) == 0
+    assert "s3/smoke" in capsys.readouterr().out
+
+
+def test_detect_without_espflash_warns_and_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(port: str) -> NoReturn:
+        raise device.MissingTool("cannot run 'espflash'; install it with `cargo install espflash`")
+
+    monkeypatch.setattr(device, "candidate_ports", lambda: ["/dev/cu.usbmodem1"])
+    monkeypatch.setattr(device, "probe", missing)
+
+    assert cli.main(["detect"]) == 1
+    assert "cargo install espflash" in capsys.readouterr().out

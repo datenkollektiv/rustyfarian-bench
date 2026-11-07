@@ -8,3 +8,4 @@ dist/
 review-queue/
 .claude/settings.local.json
 tmp/
+release/

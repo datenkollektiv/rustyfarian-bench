@@ -44,7 +44,7 @@ def _run(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
     try:
         return subprocess.run(argv, cwd=repo, env=device.ESPFLASH_ENV).returncode == 0
     except (FileNotFoundError, PermissionError) as e:
-        raise RuntimeError(f"cannot run {argv[0]!r}: {e}") from e
+        raise device.missing_tool(argv[0], e) from e
 
 
 def _overall(verdicts: list[str]) -> str:
@@ -63,6 +63,7 @@ class Session:
         self.opts = opts
         self.device: device.Device | None = None
         self.results: list[ExampleResult] = []
+        self.stopped = False  # set by Ctrl-C or a missing tool: no further examples
 
     def ask(self, question: str, default: bool = True) -> bool:
         return default if self.opts.assume_yes else ui.ask(question, default)
@@ -116,6 +117,10 @@ class Session:
                 if i > 0 and not self.ask(f"Start {example}?"):
                     break
                 self.results.append(self.run_example(scenario, example))
+                if self.stopped:
+                    break
+            if self.stopped:
+                break  # `--yes` must not carry on past Ctrl-C or a missing tool
         self.summary()
         return _overall([r.verdict for r in self.results])
 
@@ -133,7 +138,12 @@ class Session:
         except KeyboardInterrupt:
             print()
             r.verdict, r.detail = "aborted", "Ctrl-C"
+            self.stopped = True
             ui.warn("aborted")
+        except device.MissingTool as e:
+            r.verdict, r.detail = "error", str(e)
+            self.stopped = True
+            ui.warn(f"error: {r.detail}")
         except Exception as e:  # any other failure must still leave a recorded row
             r.verdict, r.detail = "error", f"{type(e).__name__}: {e}"
             ui.warn(f"error: {r.detail}")

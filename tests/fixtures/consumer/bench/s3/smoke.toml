@@ -1,0 +1,5 @@
+examples = ["smoke_example"]
+
+[[step]]
+say = "Nothing to do"
+confirm = "Saw nothing?"

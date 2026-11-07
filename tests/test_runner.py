@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from rustyfarian_bench import device as device_mod
 from rustyfarian_bench import runner, ui
 from rustyfarian_bench.config import BenchConfig, Board, Scenario, Step
 from rustyfarian_bench.device import Device
@@ -258,6 +259,85 @@ def test_keyboard_interrupt_is_still_aborted_and_releases_the_port(
     assert result.verdict == "aborted"
     assert lines.exited == 1
     assert [r["verdict"] for r in _rows(tmp_path)] == ["aborted"]
+
+
+def test_ctrl_c_ends_the_session_even_with_assume_yes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines = FakeLines()
+    session, scenario = _session(tmp_path, monkeypatch, lines, "ex1", "ex2")
+    built: list[str] = []
+
+    def record_build(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
+        built.append(subst["example"])
+        return True
+
+    def interrupted(step: Step, lines: object, ask: object) -> StepResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "_run", record_build)
+    monkeypatch.setattr(runner, "run_step", interrupted)
+
+    outcome = session.run((scenario, replace(scenario, name="next")), None)
+
+    assert "ex2" not in built
+    assert [r.verdict for r in session.results] == ["aborted"]
+    assert [r["verdict"] for r in _rows(tmp_path)] == ["aborted"]
+    assert outcome == "fail"
+
+
+def test_abort_in_a_later_example_skips_the_rest_of_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario = _session(tmp_path, monkeypatch, FakeLines(), "ex1", "ex2")
+    judged: list[str] = []
+
+    def second_is_interrupted(step: Step, lines: object, ask: object) -> StepResult:
+        judged.append(step.say)
+        if len(judged) == 2:
+            raise KeyboardInterrupt
+        return StepResult(step.say, True, "ok")
+
+    monkeypatch.setattr(runner, "run_step", second_is_interrupted)
+
+    session.run((scenario, replace(scenario, name="next")), None)
+
+    assert [(r.scenario, r.verdict) for r in session.results] == [
+        ("chk", "pass"),
+        ("chk", "aborted"),
+    ]
+
+
+def test_a_missing_espflash_ends_the_run_with_one_readable_error_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario = _session(tmp_path, monkeypatch, FakeLines(), "ex1", "ex2")
+    monkeypatch.undo()  # drop the `_device_for` patch: go through the real wait_for/probe
+    board = scenario.board
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"s3": board}, (scenario,))
+    session = runner.Session(cfg, runner.Options(repo=tmp_path, assume_yes=True))
+    built: list[str] = []
+
+    def record_build(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
+        built.append(subst["example"])
+        return True
+
+    def missing(*a: object, **k: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory", "espflash")
+
+    monkeypatch.setattr(runner, "_run", record_build)
+    monkeypatch.setattr(device_mod, "candidate_ports", lambda: ["/dev/x"])
+    monkeypatch.setattr("rustyfarian_bench.device.os.path.exists", lambda p: True)
+    monkeypatch.setattr("rustyfarian_bench.device.subprocess.run", missing)
+
+    outcome = session.run((scenario,), None)
+
+    assert built == ["ex1"]
+    [row] = _rows(tmp_path)
+    assert row["verdict"] == "error"
+    assert str(row["detail"]).startswith("cannot run 'espflash'")
+    assert "cargo install espflash" in str(row["detail"])
+    assert outcome == "error"
 
 
 def test_an_error_example_does_not_stop_the_next_one_and_the_run_is_not_a_pass(

@@ -167,3 +167,23 @@ def test_wait_for_accepts_a_port_once_it_is_released(
 
     assert d.port == str(port)
     assert sum("waiting until it is released" in m for m in shown) == 1
+
+
+@pytest.mark.parametrize(
+    ("exc", "hint"),
+    [
+        (FileNotFoundError(2, "No such file or directory", "espflash"), True),
+        (PermissionError(13, "Permission denied", "espflash"), False),
+    ],
+)
+def test_probe_without_a_runnable_espflash_raises_missing_tool(
+    monkeypatch: pytest.MonkeyPatch, exc: OSError, hint: bool
+) -> None:
+    def broken(*a: object, **k: object) -> object:
+        raise exc
+
+    monkeypatch.setattr("rustyfarian_bench.device.subprocess.run", broken)
+
+    with pytest.raises(device_mod.MissingTool, match=r"cannot run 'espflash'") as info:
+        device_mod.probe("/dev/x")
+    assert ("cargo install espflash" in str(info.value)) is hint

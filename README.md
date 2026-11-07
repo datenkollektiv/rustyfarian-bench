@@ -1,9 +1,41 @@
 # rustyfarian-bench
 
+<p align="center">
+  <img
+    src="docs/steampunk-meets-future-on-testing-bench.png"
+    alt="Ride inspector — guided bench checks. A steampunk fairground (no_std / esp-hal) and a
+    neon test console (std / esp-idf), with the rustyfarian ride inspector mascot checking an
+    ESP32 on the bench: build, flash, reset, watch, verdict. Every ride checked before opening."
+    width="720">
+</p>
+
+[![Verify](https://github.com/datenkollektiv/rustyfarian-bench/actions/workflows/verify.yml/badge.svg)](https://github.com/datenkollektiv/rustyfarian-bench/actions/workflows/verify.yml)
+[![Release](https://img.shields.io/github/v/tag/datenkollektiv/rustyfarian-bench?label=release&sort=semver)](https://github.com/datenkollektiv/rustyfarian-bench/tags)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.14-blue.svg)](pyproject.toml)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![mypy: strict](https://img.shields.io/badge/mypy-strict-2a6db2.svg)](https://mypy.readthedocs.io/)
+
 Guided, rerunnable hardware bench tests for the rustyfarian ESP32 crates.
 
 A consumer repo describes its boards and checks as TOML under `bench/`.
 The runner builds the example, waits for the right board, flashes it, resets it, captures the serial output, and walks the operator through each step with an automatic verdict.
+
+## Getting started
+
+Prerequisites: [`just`](https://github.com/casey/just), [`uv`](https://docs.astral.sh/uv/), [`espflash`](https://github.com/esp-rs/espflash) and the consumer's Rust toolchain.
+Python ≥ 3.12 is enough; `uvx` provisions it if missing.
+Hardware runs are tested on macOS only; Linux serial ports are detected but untested on a bench, and Windows is unsupported.
+
+Run a pinned release from a consumer repo, with no rustyfarian-bench checkout:
+
+```sh
+uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.1.0 rustyfarian-bench --repo . list
+uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.1.0 rustyfarian-bench --repo . run s3
+```
+
+Pin the tag in the consumer's `bench` recipe; bumping it is how a consumer opts into a new release.
 
 ## Usage
 
@@ -104,13 +136,13 @@ The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s), so an
 
 ## Verdicts and exit codes
 
-| Verdict      | Meaning                                                         |
-|:-------------|:----------------------------------------------------------------|
-| `pass`       | every required step was observed and passed                     |
-| `fail`       | a step failed, or the run stopped before the last step          |
-| `unverified` | nothing failed, but a required `confirm` was skipped by `--yes` |
-| `error`      | the run broke (missing tool, crash); the detail names the cause |
-| `aborted`    | Ctrl-C                                                          |
+| Verdict      | Meaning                                                                                          |
+|:-------------|:-------------------------------------------------------------------------------------------------|
+| `pass`       | every required step was observed and passed                                                      |
+| `fail`       | a step failed, or the run stopped before the last step                                           |
+| `unverified` | nothing failed, but a required `confirm` was skipped by `--yes`                                  |
+| `error`      | the run broke (missing tool, crash); the detail names the cause; a missing tool ends the session |
+| `aborted`    | Ctrl-C; the session ends, later examples do not start                                            |
 
 `run` exits 0 when every example passed and 3 when the only shortfall is `unverified`.
 It exits 1 on any fail, error or abort, 2 on a bench definition error, and 130 on Ctrl-C between examples.
@@ -118,5 +150,7 @@ It exits 1 on any fail, error or abort, 2 on a bench definition error, and 130 o
 ## Development
 
 ```sh
-just verify   # ruff, format check, mypy --strict, pytest
+just verify               # ruff, format check, mypy --strict, pytest
+just verify-python 3.12   # the same gate on the declared Python floor
+just smoke-install        # build the wheel and run it through an isolated uvx
 ```

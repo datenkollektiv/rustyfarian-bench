@@ -39,7 +39,11 @@ def _cmd_detect(_: argparse.Namespace) -> int:
         ui.warn("no candidate serial ports")
         return 1
     for p in ports:
-        d, error = device.probe(p)
+        try:
+            d, error = device.probe(p)
+        except device.MissingTool as e:
+            ui.warn(str(e))
+            return 1
         print(f"{p:32} {d.chip:10} {d.mac}" if d else f"{p:32} ?          {error}")
     return 0
 

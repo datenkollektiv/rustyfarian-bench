@@ -1,0 +1,42 @@
+name: Verify
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # the declared floor (requires-python) and the dev default (.python-version)
+        python: ["3.12", "3.14"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Setup just
+        uses: extractions/setup-just@v4
+
+      - name: Lint, format check, type-check, tests
+        run: just verify-python ${{ matrix.python }}
+
+      - name: Install smoke check
+        if: matrix.python == '3.14'
+        run: just smoke-install

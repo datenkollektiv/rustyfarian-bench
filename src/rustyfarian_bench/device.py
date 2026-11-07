@@ -29,6 +29,18 @@ class Device:
     mac: str | None
 
 
+class MissingTool(RuntimeError):
+    """A required external program cannot be run; no later example can fare better."""
+
+
+def missing_tool(tool: str, e: OSError) -> MissingTool:
+    """Build the one-line message for a `tool` that is absent or not executable."""
+    msg = f"cannot run {tool!r} ({e.strerror or e})"
+    if tool == "espflash" and isinstance(e, FileNotFoundError):
+        msg += "; install it with `cargo install espflash`"
+    return MissingTool(msg)
+
+
 def candidate_ports() -> list[str]:
     ports = []
     for p in list_ports.comports():
@@ -73,7 +85,10 @@ def probe_error(text: str) -> str:
 
 
 def probe(port: str) -> tuple[Device | None, str]:
-    """Ask espflash which chip answers on `port`; on failure return espflash's error."""
+    """Ask espflash which chip answers on `port`; on failure return espflash's error.
+
+    Raises `MissingTool` when espflash itself cannot be run.
+    """
     try:
         out = subprocess.run(
             ["espflash", "board-info", "--port", port, "--non-interactive"],
@@ -84,6 +99,9 @@ def probe(port: str) -> tuple[Device | None, str]:
         )
     except subprocess.TimeoutExpired:
         return None, "espflash board-info timed out"
+    except (FileNotFoundError, PermissionError) as e:
+        # Not a per-port error: `wait_for` would retry it forever.
+        raise missing_tool("espflash", e) from e
     text = out.stdout + out.stderr
     chip, mac = parse_board_info(text)
     if chip:
@@ -112,6 +130,8 @@ def wait_for(
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> Device:
     """Block until a matching board answers; Ctrl-C aborts.
+
+    Raises `MissingTool` when espflash cannot be run.
 
     A port with the wrong chip is skipped until it disappears (board swapped).
     A port held by another process (a parallel session) is skipped while it stays
