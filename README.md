@@ -65,10 +65,11 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
 
 ## Session flow
 
-1. Build the example (`commands.build`), so the slow part runs before the board is needed.
+1. Build the example (`commands.build`, or the board's own `build`), so the slow part runs before the board is needed.
 2. Poll serial ports and run `espflash board-info` on each until the board's chip (and optional MAC) answers; a port another session holds is skipped, so two boards can bench side by side (pin `mac` when two boards share a chip: the lock is only held while a session reads its port).
-3. Flash (`commands.flash`, with `{port}`).
-4. Open the port exclusively with DTR/RTS deasserted, hard-reset into the app via RTS (esptool's USB-JTAG sequence), and read it with pyserial, reopening across USB re-enumeration; every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
+   A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash; it always needs `--port` (a lone attached port is no proof of which board it is), and the run stops without it.
+3. Flash (`commands.flash`, or the board's own `flash`, with `{port}`).
+4. Open the port exclusively with DTR/RTS deasserted, reset into the app, and read it with pyserial, reopening across USB re-enumeration. The reset is an RTS pulse (esptool's USB-JTAG sequence) by default; `reset = "dtr"` pulses DTR for auto-reset bridges (Arduino Nano, CH340/FT232) and `"none"` skips it; `baud` is per board. Every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
 5. Run the steps; each step waits for Enter and drops the backlog before its clock starts (`arm = false` for a step that must read what the reset printed, e.g. the banner); a failed step offers a retry, then asks what the operator saw and records it as the step's `note`.
 6. Offer the scenario's next example (e.g. the `idf` twin), then append the result to `bench/<board>/results.jsonl`; an example you asked for (everything but the twins of a named example) that you decline is recorded as `skipped`.
 
@@ -97,6 +98,15 @@ chip = "esp32s3"
 name = "CrowPanel 1.28\" HMI (ESP32-S3)"
 # mac = "dc:54:75:..."   # pin one physical board
 # checks = ["pulse", "rainbow"]   # run these first, in this order; the rest follow by name
+
+[boards.avr]
+chip = "atmega328p"
+name = "Arduino Nano"
+detect = false                                  # espflash cannot identify it; --port is required
+reset = "dtr"                                    # auto-reset bridge; default "rts", or "none"
+# baud = 115200
+build = ["just", "build-avr-bin", "{example}"]  # per-board commands override [commands]
+flash = ["just", "flash-avr-bin", "{example}", "{port}"]
 ```
 
 A scenario:
@@ -133,7 +143,7 @@ The definition is checked strictly when it loads, before anything is built:
 - A board's `checks` must not list a name twice.
 
 A lost serial link fails a `duration` or `settle` window.
-The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s), so an unplug within the first 5 s after the reset goes unnoticed by watch windows.
+The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s; none with `reset = "none"`), so an unplug within the first 5 s after the reset goes unnoticed by watch windows.
 
 ## Verdicts and exit codes
 

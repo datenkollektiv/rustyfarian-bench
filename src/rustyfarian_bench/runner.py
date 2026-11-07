@@ -65,7 +65,9 @@ class Session:
         self.opts = opts
         self.device: device.Device | None = None
         self.results: list[ExampleResult] = []
-        self.stopped = False  # set by Ctrl-C or a missing tool: no further examples
+        self.stopped = (
+            False  # set by Ctrl-C, a missing tool or a missing --port: no further examples
+        )
 
     def ask(self, question: str, default: bool = True) -> bool:
         return default if self.opts.assume_yes else ui.ask(question, default)
@@ -101,8 +103,24 @@ class Session:
         d = self.device
         if d and os.path.exists(d.port) and device.matches(scenario.board, d):
             return d
-        self.device = device.wait_for(scenario.board, self.opts.port)
+        if scenario.board.detect:
+            self.device = device.wait_for(scenario.board, self.opts.port)
+        else:
+            self.device = self._undetected(scenario)
         return self.device
+
+    def _undetected(self, scenario: Scenario) -> device.Device:
+        """A board with `detect = false`: `--port` is required.
+
+        Never runs espflash. A lone attached port is no proof of which board it is,
+        so nothing is guessed.
+        """
+        board = scenario.board
+        port = self.opts.port
+        if port is None:
+            raise device.PortRequired(f"{board.name} cannot be detected; pick its port with --port")
+        ui.info(f"Using {port} for {board.name} (not detected: {board.chip})")
+        return device.Device(port=port, chip=device.normalize_chip(board.chip), mac=None)
 
     @staticmethod
     def _plan(scenario: Scenario, first_example: str | None) -> tuple[tuple[str, ...], list[str]]:
@@ -170,7 +188,7 @@ class Session:
             r.verdict, r.detail = "aborted", "Ctrl-C"
             self.stopped = True
             ui.warn("aborted")
-        except device.MissingTool as e:
+        except (device.MissingTool, device.PortRequired) as e:
             r.verdict, r.detail = "error", str(e)
             self.stopped = True
             ui.warn(f"error: {r.detail}")
@@ -183,20 +201,22 @@ class Session:
     def _run_example(
         self, scenario: Scenario, example: str, stamp: datetime, r: ExampleResult
     ) -> None:
-        if self.opts.build and not _run(self.cfg.build, self.opts.repo, example=example):
+        board = scenario.board
+        if self.opts.build and not _run(self.cfg.build_for(board), self.opts.repo, example=example):
             r.verdict, r.detail = "fail", "build failed"
             return
 
         d = self._device_for(scenario)
         r.port, r.chip, r.mac = d.port, d.chip, d.mac
 
-        if not _run(self.cfg.flash, self.opts.repo, example=example, port=d.port):
+        if not _run(self.cfg.flash_for(board), self.opts.repo, example=example, port=d.port):
             r.verdict, r.detail = "fail", "flash failed"
             return
 
         log = self.cfg.board_dir(scenario.board) / "logs" / f"{example}-{stamp:%Y%m%d-%H%M%S}.log"
         r.log = str(log.relative_to(self.opts.repo))
-        with SerialLines(d.port, log) as lines:  # resets into the app on open
+        # Resets into the app on open, as the board's `reset` says.
+        with SerialLines(d.port, log, baud=board.baud, reset=board.reset) as lines:
             total = len(scenario.steps)
             for n, step in enumerate(scenario.steps, 1):
                 while True:

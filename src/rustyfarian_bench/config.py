@@ -16,11 +16,15 @@ import string
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 class ConfigError(Exception):
     """The bench definition is missing or malformed."""
+
+
+ResetMode = Literal["rts", "dtr", "none"]
+RESET_MODES: tuple[ResetMode, ...] = ("rts", "dtr", "none")
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,14 @@ class Board:
     name: str
     mac: str | None = None
     checks: tuple[str, ...] = ()
+    # Per-board commands override `[commands]`; empty means use the global one.
+    build: tuple[str, ...] = ()
+    flash: tuple[str, ...] = ()
+    # `False` for boards espflash cannot identify (e.g. AVR): the port is taken as given.
+    detect: bool = True
+    # Serial settings: reset via RTS (native USB), DTR (auto-reset bridges) or not at all.
+    baud: int = 115_200
+    reset: ResetMode = "rts"
 
 
 @dataclass(frozen=True)
@@ -77,6 +89,12 @@ class BenchConfig:
     def board_dir(self, board: Board) -> Path:
         return self.root / board.key
 
+    def build_for(self, board: Board) -> tuple[str, ...]:
+        return board.build or self.build
+
+    def flash_for(self, board: Board) -> tuple[str, ...]:
+        return board.flash or self.flash
+
     def find(self, target: str) -> tuple[Scenario, ...]:
         """Scenarios for an example name, a `board/check` name, or a whole board."""
         by_example = tuple(s for s in self.scenarios if target in s.examples)
@@ -104,6 +122,21 @@ def _bool(raw: dict[str, Any], key: str, default: bool, where: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{where}: '{key}' must be true or false")
     return value
+
+
+def _baud(raw: dict[str, Any], where: str) -> int:
+    value = raw.get("baud", 115_200)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{where}.baud: must be a positive integer")
+    return value
+
+
+def _reset(raw: dict[str, Any], where: str) -> ResetMode:
+    value = raw.get("reset", "rts")
+    for mode in RESET_MODES:
+        if value == mode:
+            return mode
+    raise ConfigError(f"{where}.reset: must be one of {', '.join(RESET_MODES)}")
 
 
 def _number(raw: dict[str, Any], key: str, default: float | None, where: str) -> float | None:
@@ -212,6 +245,11 @@ def _parse_step(raw: Any, where: str) -> Step:
     )
 
 
+def _board_command(raw: dict[str, Any], key: str, where: str, allowed: set[str]) -> tuple[str, ...]:
+    """A board's own command, checked like `[commands]`; `()` when absent."""
+    return _command(raw[key], f"{where}.{key}", allowed) if key in raw else ()
+
+
 def _parse_board(key: str, raw: Any, where: str) -> Board:
     if not isinstance(raw, dict):
         raise ConfigError(f"{where}: must be a table")
@@ -228,6 +266,11 @@ def _parse_board(key: str, raw: Any, where: str) -> Board:
         name=key if name is None else name,
         mac=_text(raw, "mac", where),
         checks=checks,
+        build=_board_command(raw, "build", where, {"example"}),
+        flash=_board_command(raw, "flash", where, {"example", "port"}),
+        detect=_bool(raw, "detect", True, where),
+        baud=_baud(raw, where),
+        reset=_reset(raw, where),
     )
 
 

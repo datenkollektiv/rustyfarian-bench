@@ -198,3 +198,9 @@ def test_expect_matched_despite_loss_still_passes() -> None:
     lines = FakeLines("count=3")
     lines.lost = True
     assert run_step(Step(say="press", expect=("count=3",), timeout=1), lines, never).ok
+
+
+def test_watch_without_reject_says_what_it_did() -> None:
+    step = Step(say="watch", duration=0.01)
+    res = run_step(step, FakeLines(), never)
+    assert res.ok and res.detail == "watched for 0.01 s"
