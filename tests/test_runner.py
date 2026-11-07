@@ -28,7 +28,7 @@ def test_assume_yes_does_not_retry_a_failed_step(
     judged: list[str] = []
 
     def fake_run_step(
-        step: Step, lines: object, ask: object, duration: float | None = None
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
     ) -> StepResult:
         judged.append(step.say)
         return StepResult(step.say, False, "nope")
@@ -97,7 +97,9 @@ def test_armed_steps_wait_for_enter_and_drop_the_backlog(
     monkeypatch.setattr(runner, "SerialLines", lambda port, log, **kw: lines)
     monkeypatch.setattr(ui, "ready", lambda msg: events.append(f"ready:{msg}"))
     monkeypatch.setattr(
-        runner, "run_step", lambda step, lines, ask, duration=None: StepResult(step.say, True, "ok")
+        runner,
+        "run_step",
+        lambda step, lines, ask, duration=None, stop=None: StepResult(step.say, True, "ok"),
     )
     monkeypatch.setattr(
         runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32s3", None)
@@ -158,7 +160,7 @@ def test_assume_yes_does_not_ask_for_a_note(
     monkeypatch.setattr(
         runner,
         "run_step",
-        lambda step, lines, ask, duration=None: StepResult(step.say, False, "nope"),
+        lambda step, lines, ask, duration=None, stop=None: StepResult(step.say, False, "nope"),
     )
     monkeypatch.setattr(ui, "note", no_note)
     monkeypatch.setattr(
@@ -213,7 +215,7 @@ def test_unexpected_exception_in_a_step_records_an_error_verdict(
     session, scenario = _session(tmp_path, monkeypatch, lines)
 
     def raising(
-        step: Step, lines: object, ask: object, duration: float | None = None
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
     ) -> StepResult:
         raise exc
 
@@ -256,7 +258,7 @@ def test_keyboard_interrupt_is_still_aborted_and_releases_the_port(
     session, scenario = _session(tmp_path, monkeypatch, lines)
 
     def interrupted(
-        step: Step, lines: object, ask: object, duration: float | None = None
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
     ) -> StepResult:
         raise KeyboardInterrupt
 
@@ -281,7 +283,7 @@ def test_ctrl_c_ends_the_session_even_with_assume_yes(
         return True
 
     def interrupted(
-        step: Step, lines: object, ask: object, duration: float | None = None
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
     ) -> StepResult:
         raise KeyboardInterrupt
 
@@ -303,7 +305,7 @@ def test_abort_in_a_later_example_skips_the_rest_of_the_session(
     judged: list[str] = []
 
     def second_is_interrupted(
-        step: Step, lines: object, ask: object, duration: float | None = None
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
     ) -> StepResult:
         judged.append(step.say)
         if len(judged) == 2:
@@ -365,7 +367,9 @@ def _interactive(
     monkeypatch.setattr(ui, "ready", lambda msg: None)
     monkeypatch.setattr(ui, "note", lambda msg: "")
     monkeypatch.setattr(
-        runner, "run_step", lambda step, lines, ask, duration=None: StepResult(step.say, ok, "x")
+        runner,
+        "run_step",
+        lambda step, lines, ask, duration=None, stop=None: StepResult(step.say, ok, "x"),
     )
     return session, scenario, other
 
@@ -455,7 +459,7 @@ def test_nothing_is_recorded_as_skipped_after_a_stop(
     session, scenario, other = _interactive(tmp_path, monkeypatch, ("Next", "Start"))
 
     def interrupted(
-        step: Step, lines: object, ask: object, duration: float | None = None
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
     ) -> StepResult:
         raise KeyboardInterrupt
 
@@ -476,7 +480,9 @@ def test_assume_yes_never_skips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(ui, "ask", no_questions)
     monkeypatch.setattr(
-        runner, "run_step", lambda step, lines, ask, duration=None: StepResult(step.say, True, "ok")
+        runner,
+        "run_step",
+        lambda step, lines, ask, duration=None, stop=None: StepResult(step.say, True, "ok"),
     )
 
     outcome = session.run((scenario, other), "s3/chk")
@@ -521,7 +527,9 @@ def test_an_error_example_does_not_stop_the_next_one_and_the_run_is_not_a_pass(
     session, scenario = _session(tmp_path, monkeypatch, lines, "ex1", "ex2")
     calls: list[str] = []
 
-    def flaky(step: Step, lines: object, ask: object, duration: float | None = None) -> StepResult:
+    def flaky(
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
+    ) -> StepResult:
         calls.append(step.say)
         if len(calls) == 1:
             raise RuntimeError("boom")
@@ -552,7 +560,9 @@ def test_session_run_reports_pass_only_when_every_example_passed(
 ) -> None:
     session, scenario = _session(tmp_path, monkeypatch, FakeLines())
     monkeypatch.setattr(
-        runner, "run_step", lambda step, lines, ask, duration=None: StepResult(step.say, True, "ok")
+        runner,
+        "run_step",
+        lambda step, lines, ask, duration=None, stop=None: StepResult(step.say, True, "ok"),
     )
 
     assert session.run((scenario,), None) == "pass"
@@ -565,7 +575,7 @@ def test_session_run_reports_fail_for_a_failed_example(
     monkeypatch.setattr(
         runner,
         "run_step",
-        lambda step, lines, ask, duration=None: StepResult(step.say, False, "nope"),
+        lambda step, lines, ask, duration=None, stop=None: StepResult(step.say, False, "nope"),
     )
 
     assert session.run((scenario,), None) == "fail"
@@ -795,7 +805,7 @@ def _armed_duration(
         return 4.0
 
     def fake_run_step(
-        step: Step, lines: object, ask: object, duration: float | None = None
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
     ) -> StepResult:
         durations.append(duration)
         return StepResult(step.say, True, "ok")
@@ -886,7 +896,11 @@ class _ModeRun:
             return True
 
         def fake_run_step(
-            step: Step, lines: object, ask: object, duration: float | None = None
+            step: Step,
+            lines: object,
+            ask: object,
+            duration: float | None = None,
+            stop: object = None,
         ) -> StepResult:
             self.judged.append(step.say)
             return StepResult(step.say, True, "ok")
@@ -989,3 +1003,33 @@ def test_skipped_rows_carry_the_mode_too(tmp_path: Path, monkeypatch: pytest.Mon
     m.session._skip(m.session.cfg.scenarios[0], ["ex"])
 
     assert [(r["verdict"], r["mode"]) for r in _rows(tmp_path)] == [("skipped", "attended")]
+
+
+def _stop_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: Step, yes: bool) -> bool:
+    board = Board("s3", "esp32s3", "S3")
+    scenario = Scenario("chk", board, ("ex",), (step,), tmp_path / "chk.toml")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"s3": board}, (scenario,))
+    seen: list[bool] = []
+
+    def fake_run_step(step: Step, lines: object, ask: object, **kw: object) -> StepResult:
+        seen.append(kw.get("stop") is not None)
+        return StepResult(step.say, True, "ok")
+
+    monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
+    monkeypatch.setattr(runner, "SerialLines", lambda port, log, **k: FakeLines())
+    monkeypatch.setattr(runner, "run_step", fake_run_step)
+    monkeypatch.setattr(
+        runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32s3", None)
+    )
+    runner.Session(cfg, runner.Options(repo=tmp_path, assume_yes=yes)).run_example(scenario, "ex")
+    return seen[0]
+
+
+def test_only_attended_watches_can_be_ended_by_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attended = Step(say="look", duration=60, attended=True, arm=False)
+    soak = Step(say="soak", duration=60, arm=False)
+    assert _stop_given(tmp_path, monkeypatch, attended, yes=False)
+    assert not _stop_given(tmp_path, monkeypatch, soak, yes=False)
+    assert not _stop_given(tmp_path, monkeypatch, attended, yes=True)

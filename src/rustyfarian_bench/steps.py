@@ -31,19 +31,34 @@ class StepResult:
 
 
 def _watch(
-    lines: LineSource, reject: re.Pattern[str] | None, seconds: float
+    lines: LineSource,
+    reject: re.Pattern[str] | None,
+    seconds: float,
+    stop: Callable[[], bool] | None = None,
 ) -> tuple[str, str] | None:
-    """Watch for `seconds`; return ("reject", line) or ("lost", "") on the first problem."""
+    """Watch for `seconds`; return ("reject", line) or ("lost", "") on the first problem.
+
+    With `stop`, the operator may end the watch early: ("stopped", elapsed seconds).
+    A problem seen before the stop still wins.
+    """
     t0 = time.monotonic()
     deadline = t0 + seconds
+    label = "Enter ends the watch" if stop is not None else ""
     try:
         while (left := deadline - time.monotonic()) > 0:
-            ui.progress(left, seconds)
+            ui.progress(left, seconds, label)
             line = lines.get(min(left, 0.2))
             if line is not None and reject is not None and reject.search(line):
                 return "reject", line
             if lines.link_lost_since(t0):
                 return "lost", ""
+            if stop is not None and stop():
+                elapsed = f"{time.monotonic() - t0:.0f}"
+                # Lines already queued happened before the stop: judge them first.
+                while (line := lines.get(0)) is not None:
+                    if reject is not None and reject.search(line):
+                        return "reject", line
+                return "stopped", elapsed
     finally:
         ui.progress_done()
     return None
@@ -54,6 +69,7 @@ def run_step(
     lines: LineSource,
     ask: Callable[[str], bool | None],
     duration: float | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> StepResult:
     reject = re.compile(step.reject) if step.reject else None
 
@@ -74,7 +90,9 @@ def run_step(
         seconds = step.duration if duration is None else duration
         # An operator-chosen length is recorded next to the scenario's, so results stay comparable.
         suffix = f" (scenario: {step.duration:g} s)" if seconds != step.duration else ""
-        bad = _watch(lines, reject, seconds)
+        bad = _watch(lines, reject, seconds, stop)
+        if bad is not None and bad[0] == "stopped":
+            return result(True, f"ended by operator after {bad[1]} s of {seconds:g} s{suffix}")
         if bad is not None:
             kind, seen = bad
             return result(

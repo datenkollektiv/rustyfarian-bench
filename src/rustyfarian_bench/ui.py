@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import select
 import shutil
 import sys
 import threading
@@ -133,6 +134,20 @@ def note(question: str) -> str:
         return input(_c("1", f"✎ {question} (Enter to skip) ")).strip()
     except EOFError:
         return ""
+
+
+def enter_pressed() -> bool:
+    """True once the operator has pressed Enter; never blocks, and False off a TTY."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        pressed, _, _ = select.select([sys.stdin], [], [], 0)
+    except (OSError, ValueError):  # no select() on this stdin, e.g. Windows
+        return False
+    if not pressed:
+        return False
+    sys.stdin.readline()
+    return True
 
 
 def ready(msg: str) -> None:
