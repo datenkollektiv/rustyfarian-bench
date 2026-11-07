@@ -79,6 +79,13 @@ class Session:
         finally:
             lines.echo = True
 
+    def _ready_duration_quietly(self, lines: SerialLines, msg: str, seconds: float) -> float:
+        lines.echo = False
+        try:
+            return ui.ready_duration(msg, seconds)
+        finally:
+            lines.echo = True
+
     def confirm(self, question: str) -> bool | None:
         """Ask the operator to vouch for something; `None` under `--yes`, never a default."""
         return None if self.opts.assume_yes else ui.ask(question, True)
@@ -184,6 +191,7 @@ class Session:
         try:
             self._run_example(scenario, example, stamp, r)
         except KeyboardInterrupt:
+            ui.progress_done()
             print()
             r.verdict, r.detail = "aborted", "Ctrl-C"
             self.stopped = True
@@ -221,13 +229,21 @@ class Session:
             for n, step in enumerate(scenario.steps, 1):
                 while True:
                     ui.step(n, total, step.say)
+                    seconds: float | None = None
                     if step.arm and step.confirm is None:
                         # Start the clock only once the operator has read the
                         # instruction, and judge only what happens from now on.
                         if not self.opts.assume_yes:
-                            self._ready_quietly(lines, step.say)
+                            if step.duration is not None:
+                                seconds = self._ready_duration_quietly(
+                                    lines, step.say, step.duration
+                                )
+                            else:
+                                self._ready_quietly(lines, step.say)
                         lines.drain()
-                    res = run_step(step, lines, lambda q: self._ask_quietly(lines, q))
+                    res = run_step(
+                        step, lines, lambda q: self._ask_quietly(lines, q), duration=seconds
+                    )
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
                     # `-y` must not retry: answering its default (yes) would loop forever.
                     if not res.failed or self.opts.assume_yes:

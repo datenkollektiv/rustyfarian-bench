@@ -2,51 +2,116 @@
 
 from __future__ import annotations
 
+import math
+import shutil
 import sys
+import threading
+import unicodedata
 
 _TTY = sys.stdout.isatty()
+_BAR = 20
+_CLEAR = "\r\033[K"
+
+# Device lines are printed from the serial reader thread, so the status line needs a lock.
+_lock = threading.Lock()
+_status: str | None = None
 
 
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _TTY else text
 
 
+def _emit(text: str) -> None:
+    """Print above the status line: clear it, print, redraw it."""
+    with _lock:
+        shown = _status is not None and _TTY
+        if shown:
+            sys.stdout.write(_CLEAR)
+        print(text, flush=True)
+        if shown:
+            sys.stdout.write(_status or "")
+            sys.stdout.flush()
+
+
 def info(msg: str) -> None:
-    print(_c("36", "• ") + msg, flush=True)
+    _emit(_c("36", "• ") + msg)
 
 
 def warn(msg: str) -> None:
-    print(_c("33", "! ") + msg, flush=True)
+    _emit(_c("33", "! ") + msg)
 
 
 def step(n: int, total: int, msg: str) -> None:
-    print(_c("1", f"\n▶ [{n}/{total}] {msg}"), flush=True)
+    _emit(_c("1", f"\n▶ [{n}/{total}] {msg}"))
 
 
 def device_line(line: str) -> None:
-    print(_c("2", f"  │ {line}"), flush=True)
+    _emit(_c("2", f"  │ {line}"))
 
 
 def verdict(
     ok: bool, msg: str, optional: bool = False, unverified: bool = False, skipped: bool = False
 ) -> None:
     if skipped:
-        print(_c("33", "  - SKIPPED ") + msg, flush=True)
+        _emit(_c("33", "  - SKIPPED ") + msg)
     elif unverified:
-        print(_c("33", "  ? UNVERIFIED ") + msg, flush=True)
+        _emit(_c("33", "  ? UNVERIFIED ") + msg)
     elif ok:
-        print(_c("32", "  ✓ ") + msg, flush=True)
+        _emit(_c("32", "  ✓ ") + msg)
     elif optional:
-        print(_c("33", "  ~ ") + msg + " (optional)", flush=True)
+        _emit(_c("33", "  ~ ") + msg + " (optional)")
     else:
-        print(_c("31", "  ✗ ") + msg, flush=True)
+        _emit(_c("31", "  ✗ ") + msg)
 
 
 def heading(msg: str) -> None:
-    print(_c("1;35", f"\n=== {msg} ==="), flush=True)
+    _emit(_c("1;35", f"\n=== {msg} ==="))
+
+
+def _fit(text: str, columns: int) -> str:
+    """The longest prefix of `text` that fits in `columns` terminal cells."""
+    used = 0
+    for i, ch in enumerate(text):
+        if unicodedata.combining(ch):
+            continue
+        used += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if used > columns:
+            return text[:i]
+    return text
+
+
+def progress(left: float, total: float, label: str = "") -> None:
+    """Draw a shrinking bar on one line; no-op off a TTY."""
+    global _status
+    if not _TTY:
+        return
+    remaining = min(_BAR, max(0, round(_BAR * left / total))) if total > 0 else 0
+    text = "  ⏱ " + "█" * remaining + "░" * (_BAR - remaining) + f"  {math.ceil(left)} s left"
+    if label:
+        text += f" — {label}"
+    # A wrapped status line cannot be cleared with \r, so keep it to one row; the spare
+    # cell is for ⏱, which some terminals draw 2 wide.
+    text = _fit(text, shutil.get_terminal_size().columns - 2)
+    with _lock:
+        if text == _status:
+            return
+        _status = text
+        sys.stdout.write(_CLEAR + text)
+        sys.stdout.flush()
+
+
+def progress_done() -> None:
+    """Erase the status line; safe when none is shown."""
+    global _status
+    with _lock:
+        if _status is not None and _TTY:
+            sys.stdout.write(_CLEAR)
+            sys.stdout.flush()
+        _status = None
 
 
 def ask(question: str, default: bool = True) -> bool:
+    progress_done()
     hint = "[Y/n]" if default else "[y/N]"
     while True:
         try:
@@ -63,6 +128,7 @@ def ask(question: str, default: bool = True) -> bool:
 
 def note(question: str) -> str:
     """Free-text answer; empty when skipped."""
+    progress_done()
     try:
         return input(_c("1", f"✎ {question} (Enter to skip) ")).strip()
     except EOFError:
@@ -71,7 +137,28 @@ def note(question: str) -> str:
 
 def ready(msg: str) -> None:
     """Block until the operator presses Enter; the step's clock starts afterwards."""
+    progress_done()
     try:
         input(_c("1", f"⏎ Press Enter, then: {msg} "))
     except EOFError:
         return
+
+
+def ready_duration(msg: str, seconds: float) -> float:
+    """Like `ready`, but the operator may type a different watch length in seconds."""
+    progress_done()
+    prompt = _c("1", f"⏎ Press Enter to watch {seconds:g} s (or type seconds), then: {msg} ")
+    while True:
+        try:
+            answer = input(prompt).strip()
+        except EOFError:
+            return seconds
+        if not answer:
+            return seconds
+        try:
+            value = float(answer)
+        except ValueError:
+            value = math.nan
+        if math.isfinite(value) and value > 0:
+            return value
+        warn(f"enter a positive number of seconds, or just Enter for {seconds:g}")
