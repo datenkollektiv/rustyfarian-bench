@@ -27,8 +27,10 @@ def device_line(line: str) -> None:
     print(_c("2", f"  │ {line}"), flush=True)
 
 
-def verdict(ok: bool, msg: str, optional: bool = False) -> None:
-    if ok:
+def verdict(ok: bool, msg: str, optional: bool = False, unverified: bool = False) -> None:
+    if unverified:
+        print(_c("33", "  ? UNVERIFIED ") + msg, flush=True)
+    elif ok:
         print(_c("32", "  ✓ ") + msg, flush=True)
     elif optional:
         print(_c("33", "  ~ ") + msg + " (optional)", flush=True)
@@ -53,3 +55,19 @@ def ask(question: str, default: bool = True) -> bool:
             return True
         if answer in ("n", "no"):
             return False
+
+
+def note(question: str) -> str:
+    """Free-text answer; empty when skipped."""
+    try:
+        return input(_c("1", f"✎ {question} (Enter to skip) ")).strip()
+    except EOFError:
+        return ""
+
+
+def ready(msg: str) -> None:
+    """Block until the operator presses Enter; the step's clock starts afterwards."""
+    try:
+        input(_c("1", f"⏎ Press Enter, then: {msg} "))
+    except EOFError:
+        return

@@ -11,8 +11,8 @@ pre-commit: fmt verify
 verify: lint fmt-check typecheck test
 
 # run the unit tests
-test:
-    uv run --locked pytest
+test *args:
+    uv run --locked pytest {{ args }}
 
 # lint with ruff
 lint:
@@ -33,3 +33,11 @@ typecheck:
 # probe the connected boards
 detect:
     uv run --locked rustyfarian-bench detect
+
+# run a consumer's checks from here: `just bench rustyfarian-peripherals s3 b3f` (sibling name or absolute path)
+bench repo target *args:
+    uv run --locked rustyfarian-bench --repo "{{ if repo =~ '^/' { repo } else { justfile_directory() / '..' / repo } }}" run "{{ target }}" {{ args }}
+
+# list a consumer's scenarios: `just bench-list rustyfarian-ws2812`
+bench-list repo:
+    uv run --locked rustyfarian-bench --repo "{{ if repo =~ '^/' { repo } else { justfile_directory() / '..' / repo } }}" list

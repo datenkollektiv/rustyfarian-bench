@@ -12,15 +12,18 @@ from .runner import Options, Session
 
 def _cmd_run(args: argparse.Namespace) -> int:
     cfg = config.load(args.repo)
-    scenarios = cfg.find(args.target)
+    target = f"{args.target}/{args.check}" if args.check else args.target
+    scenarios = cfg.find(target)
     opts = Options(repo=args.repo, port=args.port, build=not args.no_build, assume_yes=args.yes)
     try:
-        ok = Session(cfg, opts).run(scenarios, first_example=args.target)
+        outcome = Session(cfg, opts).run(scenarios, first_example=target)
     except KeyboardInterrupt:
         print()
         ui.warn("aborted")
         return 130
-    return 0 if ok else 1
+    if outcome == "pass":
+        return 0
+    return 3 if outcome == "unverified" else 1
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
@@ -36,8 +39,8 @@ def _cmd_detect(_: argparse.Namespace) -> int:
         ui.warn("no candidate serial ports")
         return 1
     for p in ports:
-        d = device.probe(p)
-        print(f"{p:32} {d.chip if d else '?':10} {d.mac if d else ''}")
+        d, error = device.probe(p)
+        print(f"{p:32} {d.chip:10} {d.mac}" if d else f"{p:32} ?          {error}")
     return 0
 
 
@@ -50,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run = sub.add_parser("run", help="run a guided check")
     run.add_argument("target", help="example name, board/check, or board")
+    run.add_argument("check", nargs="?", help="check on the board, e.g. `s3 b3f`")
     run.add_argument("--port", help="serial port (default: auto-detect)")
     run.add_argument("--no-build", action="store_true", help="skip the build step")
     run.add_argument(
