@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import device, ui
-from .config import BenchConfig, Board, Scenario, Step, references, resolve
+from .config import BenchConfig, Board, Scenario, Step, defines, references, resolve
 from .serial_lines import SerialLines
 from .steps import StepResult, run_step
 
@@ -108,6 +108,14 @@ class Session:
         lines.echo = False
         try:
             return self.confirm(question)
+        finally:
+            lines.echo = True
+
+    def _ask_muted(self, lines: SerialLines, question: str, default: bool = True) -> bool:
+        """`ask`, without device lines scrolling over the question."""
+        lines.echo = False
+        try:
+            return self.ask(question, default)
         finally:
             lines.echo = True
 
@@ -269,6 +277,10 @@ class Session:
             total = len(selected)
             captured: dict[str, str] = {}  # named groups matched so far, for `(?P=name)`
             for n, step in enumerate(selected, 1):
+                # A step that declares a name owns it from here on: whatever it does not
+                # capture must not survive from an earlier step. Its own references are
+                # resolved first, so it may still compare against the earlier value.
+                declared = {name for p in step.expect for name in defines(p)}
                 missing = sorted(
                     {name for p in (*step.expect, step.reject or "") for name in references(p)}
                     - set(captured)
@@ -283,7 +295,11 @@ class Session:
                     )
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
                     r.steps.append(res)
-                    if res.failed and not self.ask("Continue with the next step?", False):
+                    for name in declared:
+                        captured.pop(name, None)
+                    if res.failed and not self._ask_muted(
+                        lines, "Continue with the next step?", False
+                    ):
                         break
                     continue
                 step = replace(
@@ -291,6 +307,8 @@ class Session:
                     expect=tuple(resolve(p, captured) for p in step.expect),
                     reject=resolve(step.reject, captured) if step.reject else None,
                 )
+                for name in declared:
+                    captured.pop(name, None)
                 while True:
                     ui.step(n, total, step.say)
                     seconds: float | None = None
@@ -305,30 +323,35 @@ class Session:
                             else:
                                 self._ready_quietly(lines, step.say)
                         lines.drain()
+                    unreset = step.reset and not lines.reset()
                     # An attended watch ends early on Enter: the operator has seen enough.
                     stop = (
                         ui.enter_pressed
                         if step.attended and step.duration is not None and not self.opts.assume_yes
                         else None
                     )
-                    res = run_step(
-                        step,
-                        lines,
-                        lambda q: self._ask_quietly(lines, q),
-                        duration=seconds,
-                        stop=stop,
+                    res = (
+                        StepResult(step.say, False, "the board did not reset")
+                        if unreset
+                        else run_step(
+                            step,
+                            lines,
+                            lambda q: self._ask_quietly(lines, q),
+                            duration=seconds,
+                            stop=stop,
+                        )
                     )
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
                     # `-y` must not retry: answering its default (yes) would loop forever.
                     if not res.failed or self.opts.assume_yes:
                         break
-                    if not self.ask("Retry this step?"):
+                    if not self._ask_muted(lines, "Retry this step?"):
                         break
                 if res.failed and not self.opts.assume_yes:
                     res = replace(res, note=self._note_quietly(lines))
                 captured.update(res.captured)
                 r.steps.append(res)
-                if res.failed and not self.ask("Continue with the next step?", False):
+                if res.failed and not self._ask_muted(lines, "Continue with the next step?", False):
                     break
 
         failed = [s for s in r.steps if s.failed]

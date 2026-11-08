@@ -139,12 +139,14 @@ Each step has `say` and exactly one of:
 | `duration` | `reject` never matches and the serial link stays up for that many seconds |
 | `confirm`  | the operator answers yes                                                  |
 
-Modifiers: `reject` (fails the step on match), `settle` (keep watching `reject` after the last `expect`), `optional` (a miss is a warning), `attended` (the step needs a person although it has no `confirm`, e.g. a PIR or a button press).
+Modifiers: `reject` (fails the step on match), `settle` (keep watching `reject` after the last `expect`), `optional` (a miss is a warning), `attended` (the step needs a person although it has no `confirm`, e.g. a PIR or a button press), `reset` (reset the board once the step starts, after Enter when armed, for a check the firmware runs at boot such as a calibration window; not on a `reset = "none"` board).
 `expect` steps also see lines printed before the step started (e.g. the boot banner); `duration` steps only judge new lines.
 
 A named group in an `expect` pattern captures the matched text for later steps of the same example: `(?P<pole>SOUTH|NORTH)`.
 A later step's `expect` or `reject` refers to it as `(?P=pole)`, matched literally, so `(?!(?P=pole))(?:SOUTH|NORTH)` asks for the other pole.
 Captures are recorded in the step's result; a reference whose step was skipped by the mode, or failed, fails the step at once.
+A later step that defines the same name takes it over: what it does not capture is cleared, never kept from the earlier step.
+Inside a character class, after `\`, or in a comment, `(?P=name)` is literal text, not a reference.
 
 The definition is checked strictly when it loads, before anything is built:
 - Booleans and numbers must be real TOML values, so `optional = "false"` is an error rather than true.
