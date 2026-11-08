@@ -1180,6 +1180,18 @@ def test_a_later_step_matches_what_an_earlier_one_captured(
     assert [s.captured for s in result.steps] == [{"pole": "NORTH"}, {}]
 
 
+def test_captures_and_evidence_are_persisted_in_the_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consumers read `results.jsonl`: the field names and shapes are the contract."""
+    _poles(tmp_path, monkeypatch, FakeLines("NORTH", "NORTH", "SOUTH"), None)
+    row = json.loads((tmp_path / "bench/s3/results.jsonl").read_text().splitlines()[-1])
+    assert [(s["captured"], s["evidence"]) for s in row["steps"]] == [
+        ({"pole": "NORTH"}, ["NORTH"]),
+        ({}, ["SOUTH"]),
+    ]
+
+
 def test_the_same_pole_twice_does_not_pass_the_other_pole_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1189,7 +1201,11 @@ def test_the_same_pole_twice_does_not_pass_the_other_pole_step(
 
 
 def _recapture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lines: FakeLines, again: Step
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    lines: FakeLines,
+    again: Step,
+    mode: runner.Mode | None = None,
 ) -> runner.ExampleResult:
     """Capture `pole`, run `again` (which declares `pole` too), then require `pole`."""
     session, scenario = _session(tmp_path, monkeypatch, lines)
@@ -1198,7 +1214,20 @@ def _recapture(
         again,
         Step(say="same", expect=(r"(?P=pole)",), timeout=0.3, arm=False),
     )
+    session.opts.mode = mode
     return session.run_example(replace(scenario, steps=steps), "ex")
+
+
+def test_a_recapture_skipped_by_the_mode_drops_the_earlier_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    again = Step(say="turn it", expect=(r"(?P<pole>SOUTH|NORTH)",), arm=False, attended=True)
+    lines = FakeLines("NORTH", "NORTH")
+    result = _recapture(tmp_path, monkeypatch, lines, again, mode="unattended")
+    assert [s.say for s in result.steps] == ["first", "same"]
+    assert result.steps[1].detail == (
+        "nothing captured for (?P=pole): its step was skipped or failed"
+    )
 
 
 def test_a_recapture_that_leaves_its_group_empty_drops_the_stale_value(

@@ -6,15 +6,25 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import TracebackType
 
 import pytest
 
 _real_sleep = time.sleep
 
+
 # One item per read(): bytes are returned, an exception is raised, a callable is a side
 # effect (e.g. unplugging the port) after which the read returns b"".
-ScriptItem = bytes | BaseException | Callable[[], None]
+@dataclass(frozen=True)
+class Buffered:
+    """Bytes the serial driver already holds: read like any bytes, dropped by
+    `reset_input_buffer()` while they are the next thing to read."""
+
+    data: bytes
+
+
+ScriptItem = bytes | Buffered | BaseException | Callable[[], None]
 
 
 class FakeLines:
@@ -96,7 +106,15 @@ class FakeSerial:
         if callable(item):
             item()
             return b""
+        if isinstance(item, Buffered):
+            return item.data
         return item
+
+    def reset_input_buffer(self) -> None:
+        assert self._script is not None
+        self.events.append("flush")
+        while self._script and isinstance(self._script[0], Buffered):
+            self._script.popleft()
 
 
 class FakeSerialWorld:

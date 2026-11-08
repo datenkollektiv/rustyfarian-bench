@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Captures are recorded per step, and a reference with no earlier capturing step is a config error at load time.
 - `reset = true` on a step resets the board once the step starts (after Enter when armed), for a check the firmware runs at boot, such as a calibration window; a retry resets again.
   A board with `reset = "none"` cannot use it (config error at load time).
+- Each step result records its `evidence`: the line every `expect` pattern matched, so a reviewer can check the values behind a pass.
 
 ### Changed
 

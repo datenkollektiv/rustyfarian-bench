@@ -21,6 +21,7 @@ class StepResult:
     unverified: bool = False  # never observed, e.g. a confirm under --yes
     note: str = ""  # what the operator saw, asked for when the step finally fails
     captured: dict[str, str] = field(default_factory=dict)  # named groups its expect matched
+    evidence: tuple[str, ...] = ()  # the line each `expect` pattern matched, in order
 
     @property
     def counts_as_pass(self) -> bool:
@@ -74,8 +75,12 @@ def run_step(
 ) -> StepResult:
     reject = re.compile(step.reject) if step.reject else None
 
+    evidence: list[str] = []
+
     def result(ok: bool, detail: str) -> StepResult:
-        return StepResult(step.say, ok, detail, optional=step.optional and not ok)
+        return StepResult(
+            step.say, ok, detail, optional=step.optional and not ok, evidence=tuple(evidence)
+        )
 
     if step.confirm is not None:
         yes = ask(step.confirm)
@@ -86,8 +91,10 @@ def run_step(
         return result(yes, "confirmed by operator" if yes else "denied by operator")
 
     if step.duration is not None:
-        # Watch-only steps judge what happens from now on, not the backlog.
-        lines.drain()
+        # Watch-only steps judge what happens from now on, not the backlog; a reset step's
+        # backlog is already the new boot (the reset dropped the old one).
+        if not step.reset:
+            lines.drain()
         seconds = step.duration if duration is None else duration
         # An operator-chosen length is recorded next to the scenario's, so results stay comparable.
         suffix = f" (scenario: {step.duration:g} s)" if seconds != step.duration else ""
@@ -127,6 +134,7 @@ def run_step(
             # event it expects when it arrives out of order or once too often.
             if m := patterns[index].search(line):
                 captured.update({k: v for k, v in m.groupdict().items() if v is not None})
+                evidence.append(line)
                 index += 1
             elif reject is not None and reject.search(line):
                 return result(False, f"rejected line: {line!r}")
@@ -143,4 +151,4 @@ def run_step(
     detail = "matched " + " → ".join(step.expect)
     if captured:
         detail += " (" + ", ".join(f"{k}={v}" for k, v in captured.items()) + ")"
-    return StepResult(step.say, True, detail, captured=captured)
+    return StepResult(step.say, True, detail, captured=captured, evidence=tuple(evidence))

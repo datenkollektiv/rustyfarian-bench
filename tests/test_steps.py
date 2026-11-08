@@ -292,3 +292,16 @@ def test_named_groups_are_captured_and_noted() -> None:
     assert res.ok
     assert res.captured == {"pole": "NORTH"}
     assert res.detail.endswith("(pole=NORTH)")
+
+
+def test_each_expect_records_the_line_it_matched() -> None:
+    step = Step(say="press", expect=("count=1", "count=3"), timeout=0.3)
+    res = run_step(step, FakeLines(*PRESSES), never)
+    assert res.evidence == ("t=10 ms  pressed  (count=1)", "t=600 ms  pressed  (count=3)")
+
+
+def test_a_settle_failure_keeps_the_evidence_it_had() -> None:
+    step = Step(say="hold", expect=("count=3",), reject=r"count=[4-9]", settle=0.3)
+    res = run_step(step, FakeLines(*PRESSES, "t=900 ms  pressed  (count=4)"), never)
+    assert not res.ok
+    assert res.evidence == ("t=600 ms  pressed  (count=3)",)

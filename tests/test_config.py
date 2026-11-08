@@ -485,3 +485,19 @@ def test_a_group_name_inside_a_class_is_not_a_definition() -> None:
 def test_a_character_class_that_looks_like_a_reference_loads(tmp_path: Path) -> None:
     ok = 'examples = ["x"]\n[[step]]\nsay = "s"\nexpect = \'[(?P=pole)]+\'\n'
     load(write(tmp_path, {"bench.toml": BENCH, "s3/ok.toml": ok}))
+
+
+@pytest.mark.parametrize(
+    ("pattern", "refs"),
+    [
+        ("(?x:NORTH # unlike (?P=pole)\n)", set()),  # a scoped verbose comment
+        ("(?x)(?-x:# (?P=pole))", {"pole"}),  # verbose switched off: # is literal
+        ("(?x:a)# (?P=pole)", {"pole"}),  # the verbose scope has ended
+        ("(?x:(?P<p>a)# (?P=pole)\n)", set()),  # a named group inside the scope
+        ("(?i)(?x) NORTH # unlike (?P=pole)\n", set()),  # verbose in a later global group
+    ],
+)
+def test_scoped_verbose_flags_decide_what_is_a_comment(pattern: str, refs: set[str]) -> None:
+    from rustyfarian_bench.config import references
+
+    assert references(pattern) == refs
