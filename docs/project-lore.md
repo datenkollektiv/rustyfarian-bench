@@ -39,6 +39,13 @@ Fix: clear all three, calling `reset_input_buffer()` right before the pulse, as 
 The startup pulse (or one on reconnect) sets the event, and a step's `reset()` that cleared it a moment earlier returns as if its own reset had happened.
 Fix: number the requests and serve only those a pulse claimed before it began; claim and withdraw under one lock, so a timed-out request is never pulsed late and a claimed one is never reported as failed.
 
+**Every open of a USB Serial/JTAG port rebooted the chip, even with `dtr = rts = False` set before `open()`.**
+macOS asserts DTR and RTS on open, and pyserial then applies DTR before RTS, so asking for both low passes through RTS high with DTR low, the reset condition.
+A reopen after a deep-sleep wake therefore cold-booted the board and discarded its retained state; every log also started with two ROM banners.
+Fix: set `dtr = True, rts = False` before open and drop DTR after it (ignoring `EINVAL`/`ENOTTY` like pyserial); measured on an ESP32-S3 with pyserial 3.5 on macOS: 4/4 opens reset before, 0/5 after (2026-11-09).
+This holds only for the ESP's RTS/DTR interlock: on a DTR auto-reset board (Arduino-style capacitor) raising DTR is the reset, so `reset = "dtr"` boards keep DTR low on open.
+pyserial does not promise glitch-free modem lines during open, and macOS asserts DTR itself, so a DTR auto-reset board can still reboot when the port opens.
+
 ---
 
 ## Regex Patterns

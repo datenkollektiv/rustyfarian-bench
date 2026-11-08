@@ -7,6 +7,7 @@ the port whenever a read fails, and hands out complete lines through a queue.
 
 from __future__ import annotations
 
+import errno
 import os
 import queue
 import threading
@@ -202,14 +203,27 @@ class SerialLines:
             # Exclusive (flock): espflash respects the lock, so a parallel session's
             # probe fails fast on this port instead of resetting the board under test.
             s.exclusive = True
-            # Deassert DTR/RTS *before* open: on USB Serial/JTAG (and auto-reset
-            # bridges) they drive EN/BOOT, and pyserial asserts both on open by
-            # default, which holds the chip in reset — a silent port.
-            s.dtr = False
+            # On USB Serial/JTAG (and auto-reset bridges) RTS high with DTR low holds
+            # the chip in reset. The OS asserts both lines on open and pyserial then
+            # applies DTR before RTS, so asking for both low passes through that state
+            # and reboots the chip on every open, a deep-sleep wake included.
+            # Keep DTR high until RTS is low, then drop it once the port is open.
+            # Not on a `reset = "dtr"` board: there DTR itself is the reset (an auto-reset
+            # capacitor), so the reader raises it only to pulse. The OS may still assert
+            # it while opening, which no request made here can prevent.
+            hold_dtr = self._reset_mode != "dtr"
+            s.dtr = hold_dtr
             s.rts = False
             buf = b""  # a partial line from a dead handle must not prefix the next one
             try:
                 with s:  # SerialBase.__enter__ opens the configured port
+                    try:
+                        if hold_dtr:
+                            s.dtr = False
+                    except OSError as e:
+                        # No modem lines (e.g. a pty): pyserial's own open ignores the same errors.
+                        if e.errno not in (errno.EINVAL, errno.ENOTTY):
+                            raise
                     ticket = self._claim_reset()
                     if ticket:
                         # Before the reset, and before __enter__ is released, so the
