@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import device, ui
-from .config import BenchConfig, Board, Scenario, Step
+from .config import BenchConfig, Board, Scenario, Step, references, resolve
 from .serial_lines import SerialLines
 from .steps import StepResult, run_step
 
@@ -267,7 +267,30 @@ class Session:
         with SerialLines(d.port, log, baud=board.baud, reset=board.reset) as lines:
             selected = steps_for(scenario, self.opts.mode)
             total = len(selected)
+            captured: dict[str, str] = {}  # named groups matched so far, for `(?P=name)`
             for n, step in enumerate(selected, 1):
+                missing = sorted(
+                    {name for p in (*step.expect, step.reject or "") for name in references(p)}
+                    - set(captured)
+                )
+                if missing:
+                    ui.step(n, total, step.say)
+                    res = StepResult(
+                        step.say,
+                        False,
+                        f"nothing captured for (?P={missing[0]}): its step was skipped or failed",
+                        optional=step.optional,
+                    )
+                    ui.verdict(res.ok, res.detail, res.optional, res.unverified)
+                    r.steps.append(res)
+                    if res.failed and not self.ask("Continue with the next step?", False):
+                        break
+                    continue
+                step = replace(
+                    step,
+                    expect=tuple(resolve(p, captured) for p in step.expect),
+                    reject=resolve(step.reject, captured) if step.reject else None,
+                )
                 while True:
                     ui.step(n, total, step.say)
                     seconds: float | None = None
@@ -303,6 +326,7 @@ class Session:
                         break
                 if res.failed and not self.opts.assume_yes:
                     res = replace(res, note=self._note_quietly(lines))
+                captured.update(res.captured)
                 r.steps.append(res)
                 if res.failed and not self.ask("Continue with the next step?", False):
                     break

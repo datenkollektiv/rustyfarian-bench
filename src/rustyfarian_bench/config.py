@@ -62,6 +62,9 @@ class Step:
       `false` for steps that must read what the reset already printed.
     - `attended`: the step needs a person although it has no `confirm` (a PIR, a button);
       `--unattended` skips it and `--attended` keeps it.
+
+    A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text;
+    a later step's `expect` or `reject` refers to it as `(?P=pole)`, matched literally.
     """
 
     say: str
@@ -168,7 +171,34 @@ def _text(raw: dict[str, Any], key: str, where: str) -> str | None:
     return value
 
 
-def _pattern(pattern: str, key: str, where: str) -> None:
+# `(?P=name)` outside the group's own pattern refers to what an earlier step captured.
+_REF = re.compile(r"\(\?P=(\w+)\)")
+_GROUP = re.compile(r"\(\?P<(\w+)>")
+
+
+def references(pattern: str) -> set[str]:
+    """Names `pattern` takes from earlier steps: `(?P=name)` with no `(?P<name>...)` of its own."""
+    return set(_REF.findall(pattern)) - set(_GROUP.findall(pattern))
+
+
+def resolve(pattern: str, values: dict[str, str]) -> str:
+    """`pattern` with each earlier-step reference replaced by its captured text, literally."""
+    own = set(_GROUP.findall(pattern))
+
+    def sub(m: re.Match[str]) -> str:
+        name = m.group(1)
+        return m.group(0) if name in own else f"(?:{re.escape(values[name])})"
+
+    return _REF.sub(sub, pattern)
+
+
+def _pattern(pattern: str, key: str, where: str, known: frozenset[str] = frozenset()) -> None:
+    unknown = sorted(references(pattern) - known)
+    if unknown:
+        raise ConfigError(
+            f"{where}: '{key}' refers to (?P={unknown[0]}), which no earlier step's expect captures"
+        )
+    pattern = resolve(pattern, dict.fromkeys(known, "x"))
     try:
         re.compile(pattern)
     except re.error as e:
@@ -199,7 +229,8 @@ def _command(value: Any, where: str, allowed: set[str]) -> tuple[str, ...]:
     return command
 
 
-def _parse_step(raw: Any, where: str) -> Step:
+def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) -> Step:
+    """One `[[step]]`; `captures` are the group names earlier steps' `expect` patterns capture."""
     if not isinstance(raw, dict):
         raise ConfigError(f"{where}: must be a table")
     known = {
@@ -226,10 +257,10 @@ def _parse_step(raw: Any, where: str) -> Step:
         if not expect or not all(p.strip() for p in expect):
             raise ConfigError(f"{where}: 'expect' must hold non-empty patterns")
         for p in expect:
-            _pattern(p, "expect", where)
+            _pattern(p, "expect", where, captures)
     reject = _text(raw, "reject", where)
     if reject is not None:
-        _pattern(reject, "reject", where)
+        _pattern(reject, "reject", where, captures)
     timeout = _number(raw, "timeout", 30.0, where)
     duration = _number(raw, "duration", None, where)
     settle = _number(raw, "settle", 0.0, where)
@@ -354,7 +385,14 @@ def load(repo: Path) -> BenchConfig:
             raw_steps = raw.get("step", [])
             if not isinstance(raw_steps, list):
                 raise ConfigError(f"{where}: 'step' must be an array of [[step]] tables")
-            steps = tuple(_parse_step(s, f"{where} step {i + 1}") for i, s in enumerate(raw_steps))
+            parsed: list[Step] = []
+            captures: frozenset[str] = frozenset()
+            for i, s in enumerate(raw_steps):
+                parsed.append(_parse_step(s, f"{where} step {i + 1}", captures))
+                for p in parsed[-1].expect:
+                    groups = re.compile(resolve(p, dict.fromkeys(captures, "x"))).groupindex
+                    captures |= set(groups)
+            steps = tuple(parsed)
             if not steps:
                 raise ConfigError(f"{where}: no [[step]] entries")
             scenarios.append(

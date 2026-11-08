@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import ui
 from .config import Step
@@ -20,6 +20,7 @@ class StepResult:
     optional: bool = False
     unverified: bool = False  # never observed, e.g. a confirm under --yes
     note: str = ""  # what the operator saw, asked for when the step finally fails
+    captured: dict[str, str] = field(default_factory=dict)  # named groups its expect matched
 
     @property
     def counts_as_pass(self) -> bool:
@@ -106,6 +107,7 @@ def run_step(
 
     # Expect steps consume the backlog, so a banner printed during reset still counts.
     patterns = [re.compile(p) for p in step.expect]
+    captured: dict[str, str] = {}
     index = 0
     started = time.monotonic()
     deadline = started + step.timeout
@@ -123,7 +125,8 @@ def run_step(
                 continue
             # The expected line wins over `reject`, so a scenario can reject the very
             # event it expects when it arrives out of order or once too often.
-            if patterns[index].search(line):
+            if m := patterns[index].search(line):
+                captured.update({k: v for k, v in m.groupdict().items() if v is not None})
                 index += 1
             elif reject is not None and reject.search(line):
                 return result(False, f"rejected line: {line!r}")
@@ -137,4 +140,7 @@ def run_step(
             if kind == "lost":
                 return result(False, "serial connection lost while settling")
             return result(False, f"rejected line while settling: {seen!r}")
-    return result(True, "matched " + " → ".join(step.expect))
+    detail = "matched " + " → ".join(step.expect)
+    if captured:
+        detail += " (" + ", ".join(f"{k}={v}" for k, v in captured.items()) + ")"
+    return StepResult(step.say, True, detail, captured=captured)
