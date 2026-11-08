@@ -10,11 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text; a later step refers to it as `(?P=pole)`, so a check can start on either side and then ask for the other one.
   Captures are recorded per step, and a reference with no earlier capturing step is a config error at load time.
+- `reset = true` on a step resets the board once the step starts (after Enter when armed), for a check the firmware runs at boot, such as a calibration window; a retry resets again.
+  A board with `reset = "none"` cannot use it (config error at load time).
 
 ### Changed
 
 - During a timed wait the step's instruction stays pinned above the countdown, so device output cannot scroll it away.
 - A typed watch length longer than the scenario's asks for confirmation (default no), so a typo like `600` for `60` cannot lock the operator in.
+- "Retry this step?" and "Continue with the next step?" mute the device echo like the other prompts, so a chatty device cannot bury the question.
 
 ## [0.3.0] - 2026-11-07
 

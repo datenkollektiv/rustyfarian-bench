@@ -450,3 +450,38 @@ def test_a_back_reference_inside_its_own_pattern_stays_a_back_reference() -> Non
 
     assert references(r"(?P<d>\d)-(?P=d)") == set()
     assert resolve(r"(?P<d>\d)-(?P=d) (?P=pole)", {"pole": "a.b"}) == r"(?P<d>\d)-(?P=d) (?:a\.b)"
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"[(?P=pole)]+",  # a character class: literal characters
+        r"\(?P=pole\)",  # escaped parentheses
+        "(?x) NORTH  # unlike (?P=pole)\n SOUTH",  # a verbose-mode comment
+        r"[\](?P=pole)x]",  # an escaped ] does not end the class
+    ],
+)
+def test_reference_syntax_inside_classes_escapes_and_comments_is_not_a_reference(
+    pattern: str,
+) -> None:
+    from rustyfarian_bench.config import references, resolve
+
+    assert references(pattern) == set()
+    assert resolve(pattern, {}) == pattern
+
+
+def test_resolve_substitutes_only_the_real_reference() -> None:
+    from rustyfarian_bench.config import resolve
+
+    assert resolve(r"[(?P=pole)] (?P=pole)", {"pole": "N"}) == r"[(?P=pole)] (?:N)"
+
+
+def test_a_group_name_inside_a_class_is_not_a_definition() -> None:
+    from rustyfarian_bench.config import references
+
+    assert references(r"[(?P<pole>)] (?P=pole)") == {"pole"}
+
+
+def test_a_character_class_that_looks_like_a_reference_loads(tmp_path: Path) -> None:
+    ok = 'examples = ["x"]\n[[step]]\nsay = "s"\nexpect = \'[(?P=pole)]+\'\n'
+    load(write(tmp_path, {"bench.toml": BENCH, "s3/ok.toml": ok}))

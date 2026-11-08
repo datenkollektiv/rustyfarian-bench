@@ -67,6 +67,7 @@ class SerialLines:
         self.echo = echo
         self._reset_mode = reset
         self._reset_pending = reset != "none"
+        self._reset_done = threading.Event()
         self._hinted = False
         # Outages as [start, end]; end is None while the link is down. The reader
         # starts out disconnected.
@@ -102,6 +103,15 @@ class SerialLines:
                 self._queue.get_nowait()
             except queue.Empty:
                 return
+
+    def reset(self, timeout: float = 5.0) -> bool:
+        """Reset the board into the app now, dropping the lines queued before it.
+
+        The reader thread pulses the open port; False if it did not within `timeout`.
+        """
+        self._reset_done.clear()
+        self._reset_pending = True
+        return self._reset_done.wait(timeout)
 
     def link_lost_since(self, t0: float) -> bool:
         """True if the link was down at any point after `t0`, bar the reset's own blip."""
@@ -176,8 +186,14 @@ class SerialLines:
                             self._ignore_before = time.monotonic() + RESET_GRACE
                     self._mark_connected()
                     if resetting:
-                        (_dtr_reset if self._reset_mode == "dtr" else _hard_reset)(s)
+                        self._pulse(s)
                     while not self._stop.is_set():
+                        if self._reset_pending:  # asked for by reset()
+                            self._reset_pending = False
+                            with self._outage_lock:
+                                self._ignore_before = time.monotonic() + RESET_GRACE
+                            self.drain()
+                            self._pulse(s)
                         chunk = s.read(256)
                         if not chunk:
                             # macOS keeps returning b"" from a vanished tty
@@ -192,6 +208,10 @@ class SerialLines:
             except (serial.SerialException, OSError):
                 self._mark_lost()
                 time.sleep(0.1)
+
+    def _pulse(self, s: serial.Serial) -> None:
+        (_dtr_reset if self._reset_mode == "dtr" else _hard_reset)(s)
+        self._reset_done.set()
 
 
 def _hard_reset(s: serial.Serial) -> None:

@@ -1188,6 +1188,63 @@ def test_the_same_pole_twice_does_not_pass_the_other_pole_step(
     assert "timeout" in result.steps[1].detail
 
 
+def _recapture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lines: FakeLines, again: Step
+) -> runner.ExampleResult:
+    """Capture `pole`, run `again` (which declares `pole` too), then require `pole`."""
+    session, scenario = _session(tmp_path, monkeypatch, lines)
+    steps = (
+        Step(say="first", expect=(r"(?P<pole>SOUTH|NORTH)",), timeout=0.3, arm=False),
+        again,
+        Step(say="same", expect=(r"(?P=pole)",), timeout=0.3, arm=False),
+    )
+    return session.run_example(replace(scenario, steps=steps), "ex")
+
+
+def test_a_recapture_that_leaves_its_group_empty_drops_the_stale_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    again = Step(say="again", expect=(r"reading(?: (?P<pole>SOUTH|NORTH))?",), arm=False)
+    result = _recapture(tmp_path, monkeypatch, FakeLines("NORTH", "reading", "NORTH"), again)
+    assert result.verdict == "fail"
+    assert result.steps[2].detail == (
+        "nothing captured for (?P=pole): its step was skipped or failed"
+    )
+
+
+def test_a_failed_optional_recapture_drops_the_stale_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    again = Step(say="again", expect=(r"(?P<pole>SOUTH)",), timeout=0.3, optional=True, arm=False)
+    result = _recapture(tmp_path, monkeypatch, FakeLines("NORTH", "NORTH"), again)
+    assert result.steps[2].detail == (
+        "nothing captured for (?P=pole): its step was skipped or failed"
+    )
+
+
+def test_a_recapture_replaces_the_earlier_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    again = Step(say="again", expect=(r"(?P<pole>SOUTH|NORTH)",), timeout=0.3, arm=False)
+    result = _recapture(tmp_path, monkeypatch, FakeLines("NORTH", "SOUTH", "SOUTH"), again)
+    assert result.verdict == "pass"
+
+
+def test_a_recapturing_step_still_compares_against_the_earlier_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    again = Step(
+        say="flip",
+        expect=(r"(?!(?P=pole))(?:SOUTH|NORTH)", r"(?P<pole>SOUTH|NORTH)"),
+        timeout=0.3,
+        arm=False,
+    )
+    lines = FakeLines("NORTH", "NORTH", "SOUTH", "SOUTH", "SOUTH")
+    result = _recapture(tmp_path, monkeypatch, lines, again)
+    assert result.verdict == "pass"
+    assert result.steps[1].captured == {"pole": "SOUTH"}
+
+
 def test_a_reference_to_a_skipped_step_fails_without_waiting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -14,6 +14,7 @@ import math
 import re
 import string
 import tomllib
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -62,6 +63,8 @@ class Step:
       `false` for steps that must read what the reset already printed.
     - `attended`: the step needs a person although it has no `confirm` (a PIR, a button);
       `--unattended` skips it and `--attended` keeps it.
+    - `reset`: reset the board once the step starts (after Enter when armed), for a check
+      the firmware runs at boot, e.g. a calibration window.
 
     A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text;
     a later step's `expect` or `reject` refers to it as `(?P=pole)`, matched literally.
@@ -77,6 +80,7 @@ class Step:
     optional: bool = False
     arm: bool = True
     attended: bool = False
+    reset: bool = False
 
     @property
     def needs_person(self) -> bool:
@@ -174,22 +178,65 @@ def _text(raw: dict[str, Any], key: str, where: str) -> str | None:
 # `(?P=name)` outside the group's own pattern refers to what an earlier step captured.
 _REF = re.compile(r"\(\?P=(\w+)\)")
 _GROUP = re.compile(r"\(\?P<(\w+)>")
+_VERBOSE = re.compile(r"\(\?[aiLmsux]*x[aiLmsux]*\)")  # global flags must lead the pattern
+
+
+def _scan(pattern: str) -> Iterator[tuple[str, re.Match[str]]]:
+    """Each `(?P=name)` ("ref") and `(?P<name>` ("group") that is regex syntax.
+
+    Skips escapes, character classes, `(?#...)` comments and, under a leading `(?x)`,
+    `#` comments: what looks like a reference there is literal text.
+    """
+    verbose = _VERBOSE.match(pattern) is not None
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+        elif c == "[":
+            i += 1
+            if pattern.startswith("^", i):
+                i += 1
+            if pattern.startswith("]", i):  # a leading ] is a member, not the end
+                i += 1
+            while i < n and pattern[i] != "]":
+                i += 2 if pattern[i] == "\\" else 1
+            i += 1
+        elif (c == "#" and verbose) or pattern.startswith("(?#", i):
+            end = pattern.find("\n" if c == "#" else ")", i)
+            i = n if end < 0 else end + 1
+        elif m := _REF.match(pattern, i):
+            yield "ref", m
+            i = m.end()
+        elif m := _GROUP.match(pattern, i):
+            yield "group", m
+            i = m.end()
+        else:
+            i += 1
+
+
+def defines(pattern: str) -> set[str]:
+    """Names `pattern` defines with `(?P<name>...)`, whether or not they end up matched."""
+    return {m.group(1) for kind, m in _scan(pattern) if kind == "group"}
 
 
 def references(pattern: str) -> set[str]:
     """Names `pattern` takes from earlier steps: `(?P=name)` with no `(?P<name>...)` of its own."""
-    return set(_REF.findall(pattern)) - set(_GROUP.findall(pattern))
+    found = list(_scan(pattern))
+    own = {m.group(1) for kind, m in found if kind == "group"}
+    return {m.group(1) for kind, m in found if kind == "ref"} - own
 
 
 def resolve(pattern: str, values: dict[str, str]) -> str:
     """`pattern` with each earlier-step reference replaced by its captured text, literally."""
-    own = set(_GROUP.findall(pattern))
-
-    def sub(m: re.Match[str]) -> str:
-        name = m.group(1)
-        return m.group(0) if name in own else f"(?:{re.escape(values[name])})"
-
-    return _REF.sub(sub, pattern)
+    found = list(_scan(pattern))
+    own = {m.group(1) for kind, m in found if kind == "group"}
+    out, at = [], 0
+    for kind, m in found:
+        if kind == "ref" and m.group(1) not in own:
+            out += [pattern[at : m.start()], f"(?:{re.escape(values[m.group(1)])})"]
+            at = m.end()
+    return "".join(out) + pattern[at:]
 
 
 def _pattern(pattern: str, key: str, where: str, known: frozenset[str] = frozenset()) -> None:
@@ -244,6 +291,7 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
         "optional",
         "arm",
         "attended",
+        "reset",
     }
     unknown = set(raw) - known
     if unknown:
@@ -286,6 +334,7 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
         optional=_bool(raw, "optional", False, where),
         arm=_bool(raw, "arm", True, where),
         attended=_bool(raw, "attended", False, where),
+        reset=_bool(raw, "reset", False, where),
     )
 
 
@@ -393,6 +442,8 @@ def load(repo: Path) -> BenchConfig:
                     groups = re.compile(resolve(p, dict.fromkeys(captures, "x"))).groupindex
                     captures |= set(groups)
             steps = tuple(parsed)
+            if board.reset == "none" and any(st.reset for st in steps):
+                raise ConfigError(f"{where}: a step sets 'reset', but board {key} has reset = none")
             if not steps:
                 raise ConfigError(f"{where}: no [[step]] entries")
             scenarios.append(
