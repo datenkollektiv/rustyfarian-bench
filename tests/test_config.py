@@ -421,3 +421,32 @@ def test_board_usb_identity_is_parsed(tmp_path: Path) -> None:
 def test_board_usb_identity_is_checked(tmp_path: Path, extra: str) -> None:
     with pytest.raises(ConfigError, match="usb_"):
         load(write(tmp_path, {"bench.toml": BENCH + extra, "s3/b3f.toml": B3F}))
+
+
+POLES = """examples = ["x"]
+[[step]]
+say = "any pole"
+expect = 'dev=\\d+\\s+(?P<pole>SOUTH|NORTH)'
+[[step]]
+say = "the other pole"
+expect = 'dev=\\d+\\s+(?!(?P=pole))(?:SOUTH|NORTH)'
+reject = 'PANIC (?P=pole)'
+"""
+
+
+def test_a_later_step_may_refer_to_an_earlier_capture(tmp_path: Path) -> None:
+    cfg = load(write(tmp_path, {"bench.toml": BENCH, "s3/hall.toml": POLES}))
+    assert len(cfg.find("s3")[0].steps) == 2
+
+
+def test_a_reference_without_an_earlier_capture_is_a_config_error(tmp_path: Path) -> None:
+    bad = 'examples = ["x"]\n[[step]]\nsay = "s"\nexpect = \'(?!(?P=pole))NORTH\'\n'
+    with pytest.raises(ConfigError, match=r"step 1: 'expect' refers to \(\?P=pole\)"):
+        load(write(tmp_path, {"bench.toml": BENCH, "s3/bad.toml": bad}))
+
+
+def test_a_back_reference_inside_its_own_pattern_stays_a_back_reference() -> None:
+    from rustyfarian_bench.config import references, resolve
+
+    assert references(r"(?P<d>\d)-(?P=d)") == set()
+    assert resolve(r"(?P<d>\d)-(?P=d) (?P=pole)", {"pole": "a.b"}) == r"(?P<d>\d)-(?P=d) (?:a\.b)"

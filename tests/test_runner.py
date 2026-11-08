@@ -1158,3 +1158,41 @@ def test_a_cached_port_does_not_stand_in_for_a_missing_port(
     session.device = Device("/dev/cu.usbserial-1", "atmega328p", None)
     with pytest.raises(device.PortRequired):
         session._device_for(scenario)
+
+
+def _poles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lines: FakeLines, mode: runner.Mode | None
+) -> runner.ExampleResult:
+    session, scenario = _session(tmp_path, monkeypatch, lines)
+    steps = (
+        Step(say="any", expect=(r"(?P<pole>SOUTH|NORTH)",), timeout=0.3, arm=False, attended=True),
+        Step(say="other", expect=(r"(?!(?P=pole))(?:SOUTH|NORTH)",), timeout=0.3, arm=False),
+    )
+    session.opts.mode = mode
+    return session.run_example(replace(scenario, steps=steps), "ex")
+
+
+def test_a_later_step_matches_what_an_earlier_one_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _poles(tmp_path, monkeypatch, FakeLines("NORTH", "NORTH", "SOUTH"), None)
+    assert result.verdict == "pass"
+    assert [s.captured for s in result.steps] == [{"pole": "NORTH"}, {}]
+
+
+def test_the_same_pole_twice_does_not_pass_the_other_pole_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _poles(tmp_path, monkeypatch, FakeLines("NORTH", "NORTH"), None)
+    assert result.verdict == "fail"
+    assert "timeout" in result.steps[1].detail
+
+
+def test_a_reference_to_a_skipped_step_fails_without_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _poles(tmp_path, monkeypatch, FakeLines("SOUTH"), "unattended")
+    assert result.verdict == "fail"
+    assert result.steps[0].detail == (
+        "nothing captured for (?P=pole): its step was skipped or failed"
+    )

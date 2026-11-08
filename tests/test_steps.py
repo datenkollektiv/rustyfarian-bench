@@ -284,3 +284,11 @@ def test_an_early_stop_notes_a_changed_scenario_length() -> None:
     step = Step(say="watch", duration=60, attended=True)
     res = run_step(step, FakeLines(), never, duration=30, stop=lambda: True)
     assert res.ok and res.detail.endswith("(scenario: 60 s)")
+
+
+def test_named_groups_are_captured_and_noted() -> None:
+    step = Step(say="pole", expect=(r"dev=\d+\s+(?P<pole>SOUTH|NORTH)",), timeout=0.3)
+    res = run_step(step, FakeLines("dev=1  ---", "dev=120  NORTH"), never)
+    assert res.ok
+    assert res.captured == {"pole": "NORTH"}
+    assert res.detail.endswith("(pole=NORTH)")

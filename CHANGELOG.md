@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text; a later step refers to it as `(?P=pole)`, so a check can start on either side and then ask for the other one.
+  Captures are recorded per step, and a reference with no earlier capturing step is a config error at load time.
+
 ### Changed
 
 - During a timed wait the step's instruction stays pinned above the countdown, so device output cannot scroll it away.
