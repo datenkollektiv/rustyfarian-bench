@@ -51,6 +51,9 @@ RESET_GRACE = 5.0
 # How long __enter__ waits for the port to open the first time, so the first step
 # does not race the reader thread.
 FIRST_OPEN_WAIT = 10.0
+# A pulse takes well under a second; a claimed reset waits this long for it to finish
+# (the port may drop mid-pulse) before reporting a failure.
+PULSE_WAIT = 5.0
 
 
 class SerialLines:
@@ -66,8 +69,13 @@ class SerialLines:
         self.baud = baud
         self.echo = echo
         self._reset_mode = reset
-        self._reset_pending = reset != "none"
-        self._reset_done = threading.Event()
+        # Reset requests are numbered, the open's own reset being the first. A request
+        # is served only by a pulse that began after it, so a pulse already running
+        # (the startup one, say) cannot answer a step's reset.
+        self._resets = threading.Condition()
+        self._reset_wanted = 0 if reset == "none" else 1
+        self._reset_claimed = 0  # the newest request a pulse has taken on
+        self._reset_served = 0
         self._hinted = False
         # Outages as [start, end]; end is None while the link is down. The reader
         # starts out disconnected.
@@ -107,11 +115,36 @@ class SerialLines:
     def reset(self, timeout: float = 5.0) -> bool:
         """Reset the board into the app now, dropping the lines queued before it.
 
-        The reader thread pulses the open port; False if it did not within `timeout`.
+        The reader thread pulses the open port. False if no pulse took the request
+        within `timeout`. A pulse that took it in time is waited for, so the call can
+        last up to `timeout` + `PULSE_WAIT`: its answer always matches what the board
+        saw.
         """
-        self._reset_done.clear()
-        self._reset_pending = True
-        return self._reset_done.wait(timeout)
+        with self._resets:
+            self._reset_wanted += 1
+            ticket = self._reset_wanted
+            served = self._resets.wait_for(lambda: self._reset_served >= ticket, timeout)
+            if not served and self._reset_claimed >= ticket:
+                # A pulse took the request before the timeout: it is under way, so wait
+                # for it and report what happened rather than a failure.
+                served = self._resets.wait_for(lambda: self._reset_served >= ticket, PULSE_WAIT)
+            if not served:
+                # Withdraw the request (under the lock, so no pulse can take it now): a
+                # reset that fires once the port returns would land in a later step.
+                self._reset_served = max(self._reset_served, ticket)
+            return served
+
+    def _claim_reset(self) -> int:
+        """Take on the newest reset request not yet served; 0 when none is waiting.
+
+        Claimed under the same lock `reset()` withdraws under, so a withdrawn request
+        is never pulsed and a claimed one is never reported as failed.
+        """
+        with self._resets:
+            if self._reset_wanted <= self._reset_served:
+                return 0
+            self._reset_claimed = self._reset_wanted
+            return self._reset_claimed
 
     def link_lost_since(self, t0: float) -> bool:
         """True if the link was down at any point after `t0`, bar the reset's own blip."""
@@ -177,23 +210,25 @@ class SerialLines:
             buf = b""  # a partial line from a dead handle must not prefix the next one
             try:
                 with s:  # SerialBase.__enter__ opens the configured port
-                    resetting = self._reset_pending
-                    if resetting:
-                        self._reset_pending = False
+                    ticket = self._claim_reset()
+                    if ticket:
                         # Before the reset, and before __enter__ is released, so the
                         # re-enumeration the reset causes is clipped.
                         with self._outage_lock:
                             self._ignore_before = time.monotonic() + RESET_GRACE
                     self._mark_connected()
-                    if resetting:
-                        self._pulse(s)
+                    if ticket:
+                        # A reset() that waited out a dropped link lands here: what was
+                        # queued before the drop belongs to the old boot.
+                        self.drain()
+                        self._pulse(s, ticket)
                     while not self._stop.is_set():
-                        if self._reset_pending:  # asked for by reset()
-                            self._reset_pending = False
+                        if ticket := self._claim_reset():  # asked for by reset()
                             with self._outage_lock:
                                 self._ignore_before = time.monotonic() + RESET_GRACE
                             self.drain()
-                            self._pulse(s)
+                            buf = b""  # the line it cut off belongs to the old boot
+                            self._pulse(s, ticket)
                         chunk = s.read(256)
                         if not chunk:
                             # macOS keeps returning b"" from a vanished tty
@@ -209,9 +244,15 @@ class SerialLines:
                 self._mark_lost()
                 time.sleep(0.1)
 
-    def _pulse(self, s: serial.Serial) -> None:
+    def _pulse(self, s: serial.Serial, ticket: int) -> None:
+        """Reset the board, serving every request up to `ticket` (read before the pulse)."""
+        # Bytes the driver still holds were sent by the old boot; read after the pulse
+        # they would pass for the new one (a USB-serial bridge keeps them across a reset).
+        s.reset_input_buffer()
         (_dtr_reset if self._reset_mode == "dtr" else _hard_reset)(s)
-        self._reset_done.set()
+        with self._resets:
+            self._reset_served = max(self._reset_served, ticket)
+            self._resets.notify_all()
 
 
 def _hard_reset(s: serial.Serial) -> None:

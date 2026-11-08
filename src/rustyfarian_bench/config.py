@@ -178,16 +178,20 @@ def _text(raw: dict[str, Any], key: str, where: str) -> str | None:
 # `(?P=name)` outside the group's own pattern refers to what an earlier step captured.
 _REF = re.compile(r"\(\?P=(\w+)\)")
 _GROUP = re.compile(r"\(\?P<(\w+)>")
-_VERBOSE = re.compile(r"\(\?[aiLmsux]*x[aiLmsux]*\)")  # global flags must lead the pattern
+_GLOBAL_FLAGS = re.compile(r"(?:\(\?[aiLmsux]+\))+")  # global flag groups must lead the pattern
+_SCOPED = re.compile(r"\(\?([aiLmsux]*)(?:-([imsx]+))?:")  # `(?x:...)`, `(?-x:...)`
 
 
 def _scan(pattern: str) -> Iterator[tuple[str, re.Match[str]]]:
     """Each `(?P=name)` ("ref") and `(?P<name>` ("group") that is regex syntax.
 
-    Skips escapes, character classes, `(?#...)` comments and, under a leading `(?x)`,
+    Skips escapes, character classes, `(?#...)` comments and, where verbose mode is on
+    (`x` in the leading global flag groups, or inside `(?x:...)` until `(?-x:...)`),
     `#` comments: what looks like a reference there is literal text.
     """
-    verbose = _VERBOSE.match(pattern) is not None
+    leading = _GLOBAL_FLAGS.match(pattern)
+    verbose = leading is not None and "x" in leading.group(0)
+    outer: list[bool] = []  # the verbose state to restore at each open group's `)`
     i, n = 0, len(pattern)
     while i < n:
         c = pattern[i]
@@ -205,12 +209,25 @@ def _scan(pattern: str) -> Iterator[tuple[str, re.Match[str]]]:
         elif (c == "#" and verbose) or pattern.startswith("(?#", i):
             end = pattern.find("\n" if c == "#" else ")", i)
             i = n if end < 0 else end + 1
-        elif m := _REF.match(pattern, i):
+        elif m := _REF.match(pattern, i):  # closes itself
             yield "ref", m
             i = m.end()
         elif m := _GROUP.match(pattern, i):
             yield "group", m
+            outer.append(verbose)
             i = m.end()
+        elif m := _SCOPED.match(pattern, i):
+            outer.append(verbose)
+            on, off = m.group(1), m.group(2) or ""
+            verbose = (verbose or "x" in on) and "x" not in off
+            i = m.end()
+        elif c == "(":
+            outer.append(verbose)
+            i += 1
+        elif c == ")":
+            if outer:
+                verbose = outer.pop()
+            i += 1
         else:
             i += 1
 

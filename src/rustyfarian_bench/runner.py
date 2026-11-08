@@ -274,13 +274,22 @@ class Session:
         # Resets into the app on open, as the board's `reset` says.
         with SerialLines(d.port, log, baud=board.baud, reset=board.reset) as lines:
             selected = steps_for(scenario, self.opts.mode)
+            chosen = {id(s) for s in selected}
             total = len(selected)
             captured: dict[str, str] = {}  # named groups matched so far, for `(?P=name)`
-            for n, step in enumerate(selected, 1):
+            n = 0
+            for step in scenario.steps:
                 # A step that declares a name owns it from here on: whatever it does not
                 # capture must not survive from an earlier step. Its own references are
                 # resolved first, so it may still compare against the earlier value.
                 declared = {name for p in step.expect for name in defines(p)}
+                if id(step) not in chosen:
+                    # Skipped by the mode: what it would have captured is unknown, so a
+                    # later reference fails instead of taking an earlier step's value.
+                    for name in declared:
+                        captured.pop(name, None)
+                    continue
+                n += 1
                 missing = sorted(
                     {name for p in (*step.expect, step.reject or "") for name in references(p)}
                     - set(captured)
@@ -331,7 +340,9 @@ class Session:
                         else None
                     )
                     res = (
-                        StepResult(step.say, False, "the board did not reset")
+                        StepResult(
+                            step.say, False, "the board did not reset", optional=step.optional
+                        )
                         if unreset
                         else run_step(
                             step,
