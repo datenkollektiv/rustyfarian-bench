@@ -226,6 +226,20 @@ def test_exit_joins_thread_and_is_not_a_loss(
     assert not sl.link_lost_since(t0)
 
 
+@pytest.mark.parametrize("mode", ["rts", "none"])
+def test_opening_never_holds_an_esp_in_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: ResetMode
+) -> None:
+    # RTS high with DTR low resets a USB-Serial-JTAG chip (and EN on auto-reset bridges);
+    # a reopen after re-enumeration, e.g. a deep-sleep wake, must not pass through it.
+    world = FakeSerialWorld([serial.SerialException("re-enumerated")], [])
+    with make(tmp_path, monkeypatch, world, reset=mode):
+        assert wait_until(world.exhausted.is_set)
+    assert len(world.opened) >= 2
+    for s in world.opened:
+        assert (False, True) not in s.open_lines
+
+
 @pytest.mark.parametrize(
     ("mode", "toggled", "untouched"),
     [("dtr", "dtr=True", "rts=True"), ("rts", "rts=True", "dtr=True"), ("none", None, "dtr=True")],
@@ -241,9 +255,39 @@ def test_reset_mode_picks_the_line_that_pulses(
     with make(tmp_path, monkeypatch, world, reset=mode):
         assert wait_until(world.exhausted.is_set)
     events = world.opened[0].events
-    assert events[0] == "open dtr=False rts=False"
-    assert untouched not in events
-    if toggled:
-        assert events.count(toggled) == 1
+    if mode == "dtr":  # DTR is that board's reset line: never raised just to open
+        assert events[0] == "open dtr=False rts=False"
+        after_open = events[1:]
     else:
-        assert not any(e.startswith(("dtr=", "rts=")) for e in events)
+        assert events[:2] == ["open dtr=True rts=False", "dtr=False"]
+        after_open = events[2:]
+    assert untouched not in after_open
+    if toggled:
+        assert after_open.count(toggled) == 1
+    else:
+        assert not any(e.startswith(("dtr=", "rts=")) for e in after_open)
+
+
+def test_a_dtr_reset_board_gets_dtr_only_for_its_reset_pulse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On an Arduino-style bridge, raising DTR is the reset: the open and a reopen after
+    # re-enumeration must not raise it; only the startup pulse does.
+    world = FakeSerialWorld([serial.SerialException("re-enumerated")], [])
+    with make(tmp_path, monkeypatch, world, reset="dtr"):
+        assert wait_until(world.exhausted.is_set)
+    assert [s.dtr_raised_by_reader for s in world.opened[:2]] == [1, 0]
+
+
+def test_none_sends_no_pulse_but_keeps_the_esp_safe_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A known limitation, pinned: "none" opens like an ESP, raising DTR once before the
+    # open. That can reset a DTR auto-reset board, which belongs on reset = "dtr".
+    world = FakeSerialWorld([serial.SerialException("re-enumerated")], [])
+    with make(tmp_path, monkeypatch, world, reset="none"):
+        assert wait_until(world.exhausted.is_set)
+    for s in world.opened[:2]:
+        assert s.dtr_raised_by_reader == 1  # the open's own, no pulse
+        assert s.open_lines[1:] == [(True, True), (True, False)]
+        assert "rts=True" not in s.events

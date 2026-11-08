@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening or reopening the port no longer reboots a USB Serial/JTAG chip: the reader clears RTS before DTR, so a woken deep-sleep board keeps its retained state and each log starts with one boot instead of two.
+  A `reset = "dtr"` board never gets DTR from the reader outside its reset pulse, since DTR is its reset line.
+
 ### Added
 
 - A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text; a later step refers to it as `(?P=pole)`, so a check can start on either side and then ask for the other one.

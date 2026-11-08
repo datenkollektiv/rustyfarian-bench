@@ -41,6 +41,8 @@ class Board:
     # `False` for boards espflash cannot identify (e.g. AVR): the port is taken as given.
     detect: bool = True
     # Serial settings: reset via RTS (native USB), DTR (auto-reset bridges) or not at all.
+    # "none" sends no reset pulse but opens like an ESP (DTR briefly high), which can
+    # still reset a DTR auto-reset board: such a board belongs on "dtr".
     baud: int = 115_200
     reset: ResetMode = "rts"
     # USB identity of an undetected board, `"vid:pid"` in hex, plus an optional serial number:

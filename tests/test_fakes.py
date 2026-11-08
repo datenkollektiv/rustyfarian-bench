@@ -34,4 +34,4 @@ def test_fake_world_scripts_one_entry_per_open(
         assert lines.get(2) == "d"
         assert wait_until(world.exhausted.is_set)
     assert len(world.opened) == 2
-    assert world.opened[0].events[0] == "open dtr=False rts=False"
+    assert world.opened[0].events[0] == "open dtr=True rts=False"

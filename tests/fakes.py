@@ -73,10 +73,22 @@ class FakeSerial:
         self.dtr = True
         self.rts = True
         self.events: list[str] = []
+        # Physical (DTR, RTS) during open: macOS asserts both, then pyserial applies DTR, then RTS.
+        self.open_lines: list[tuple[bool, bool]] = []
         self._script: deque[ScriptItem] | None = None
+
+    @property
+    def dtr_raised_by_reader(self) -> int:
+        """How often the reader drove DTR high (asked for before open, or set after).
+
+        Each one reboots a DTR auto-reset board (an Arduino-style bridge with a capacitor
+        on DTR). The OS's own assertion while opening (macOS) is not the reader's.
+        """
+        return int(self.open_lines[1][0]) + self.events.count("dtr=True")
 
     def __enter__(self) -> FakeSerial:
         self.world.opened.append(self)
+        self.open_lines = [(True, True), (self.dtr, True), (self.dtr, self.rts)]
         self.events.append(f"open dtr={self.dtr} rts={self.rts}")
         script = self.world.next_script()
         if isinstance(script, BaseException):
