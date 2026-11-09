@@ -509,7 +509,7 @@ PROBE = 'probe = ["just", "mqtt-watch", "{example}"]'
 def test_probe_fields_are_the_reserved_placeholders() -> None:
     from rustyfarian_bench.config import PROBE_FIELDS
 
-    expected = frozenset({"port", "example", "board", "chip"})
+    expected = frozenset({"port", "example", "board", "chip", "mac"})
     assert expected == PROBE_FIELDS
 
 
@@ -576,7 +576,7 @@ def test_a_probe_step_cannot_also_confirm_or_reset(tmp_path: Path, other: str, w
         load_scenario(tmp_path, scenario(*lines))
 
 
-@pytest.mark.parametrize("name", ["port", "example", "board", "chip"])
+@pytest.mark.parametrize("name", ["port", "example", "board", "chip", "mac"])
 def test_probe_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
     cfg = load_scenario(tmp_path, scenario(f'probe = ["watch", "{{{name}}}"]', 'expect = "a"'))
     assert cfg.scenarios[0].steps[0].probe == ("watch", f"{{{name}}}")
@@ -746,7 +746,7 @@ def test_a_malformed_run_is_a_config_error(tmp_path: Path, value: str, message: 
         load_scenario(tmp_path, scenario(f"run = {value}", 'expect = "a"'))
 
 
-@pytest.mark.parametrize("name", ["port", "example", "board", "chip"])
+@pytest.mark.parametrize("name", ["port", "example", "board", "chip", "mac"])
 def test_run_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
     cfg = load_scenario(tmp_path, scenario(f'run = ["pub", "{{{name}}}"]', 'expect = "a"'))
     assert cfg.scenarios[0].steps[0].run == ("pub", f"{{{name}}}")
@@ -845,7 +845,7 @@ def test_setup_rejects_port_with_its_index_and_the_allowed_names(tmp_path: Path)
         load_scenario(tmp_path, text)
 
 
-@pytest.mark.parametrize("name", ["chip", "nope", "cid"])
+@pytest.mark.parametrize("name", ["chip", "mac", "nope", "cid"])
 def test_setup_rejects_every_other_name(tmp_path: Path, name: str) -> None:
     # `cid` is what an earlier step captures: hooks never see captures.
     text = (
@@ -857,7 +857,7 @@ def test_setup_rejects_every_other_name(tmp_path: Path, name: str) -> None:
         load_scenario(tmp_path, text)
 
 
-@pytest.mark.parametrize("name", ["port", "example", "board", "chip"])
+@pytest.mark.parametrize("name", ["port", "example", "board", "chip", "mac"])
 def test_teardown_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
     (sc,) = load_scenario(tmp_path, hooked(f'teardown = [["down", "{{{name}}}"]]')).scenarios
     assert sc.teardown == (("down", f"{{{name}}}"),)
@@ -877,3 +877,164 @@ def test_the_setup_field_names_are_example_and_board() -> None:
     from rustyfarian_bench.config import SETUP_FIELDS
 
     assert frozenset({"example", "board"}) == SETUP_FIELDS
+
+
+# Prompts: `say` and `confirm` take the same placeholders as `probe` and `run`.
+
+PROMPT_FIELDS = ["port", "example", "board", "chip", "mac"]
+
+
+@pytest.mark.parametrize("name", PROMPT_FIELDS)
+def test_say_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
+    text = f'examples = ["x"]\n[[step]]\nsay = "plug {{{name}}}"\nexpect = "a"\n'
+    cfg = load_scenario(tmp_path, text)
+    assert cfg.scenarios[0].steps[0].say == f"plug {{{name}}}"
+
+
+@pytest.mark.parametrize("name", PROMPT_FIELDS)
+def test_confirm_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
+    text = scenario(f'confirm = "is {{{name}}} lit?"')
+    cfg = load_scenario(tmp_path, text)
+    assert cfg.scenarios[0].steps[0].confirm == f"is {{{name}}} lit?"
+
+
+PROMPTING = """examples = ["x"]
+[[step]]
+say = "learn the id"
+expect = 'client (?P<cid>\\w+)'
+[[step]]
+say = "look at {cid}"
+confirm = "is {cid} lit?"
+"""
+
+
+def test_say_and_confirm_accept_a_name_an_earlier_step_captured(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, PROMPTING)
+    step = cfg.scenarios[0].steps[1]
+    assert step.say == "look at {cid}"
+    assert step.confirm == "is {cid} lit?"
+
+
+def test_say_rejects_an_unknown_name(tmp_path: Path) -> None:
+    text = 'examples = ["x"]\n[[step]]\nsay = "plug {typo}"\nexpect = "a"\n'
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{typo\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_confirm_rejects_an_unknown_name(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{typo\}"):
+        load_scenario(tmp_path, scenario('confirm = "is {typo} lit?"'))
+
+
+@pytest.mark.parametrize("key", ["say", "confirm"])
+@pytest.mark.parametrize(
+    "prompt",
+    ["{example", "x}", "{}", "{0}", "{a.b}", "{a[0]}"],
+    ids=["unclosed", "stray-close", "empty-field", "positional", "attribute", "index"],
+)
+def test_say_and_confirm_reject_bad_braces(tmp_path: Path, key: str, prompt: str) -> None:
+    other = f'confirm = "{prompt}"' if key == "confirm" else ""
+    say = prompt if key == "say" else "s"
+    text = f'examples = ["x"]\n[[step]]\nsay = "{say}"\n{other}\n'
+    if key == "say":
+        text += 'expect = "a"\n'
+    with pytest.raises(ConfigError, match=r"c\.toml step 1.*placeholder"):
+        load_scenario(tmp_path, text)
+
+
+def test_a_prompt_rejects_a_name_only_a_later_step_captures(tmp_path: Path) -> None:
+    text = (
+        'examples = ["x"]\n[[step]]\nsay = "look at {cid}"\nexpect = "a"\n'
+        "[[step]]\nsay = \"learn\"\nexpect = 'client (?P<cid>\\w+)'\n"
+    )
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_a_prompt_rejects_a_name_its_own_step_captures(tmp_path: Path) -> None:
+    text = 'examples = ["x"]\n[[step]]\nsay = "{cid}"\nexpect = \'client (?P<cid>\\w+)\'\n'
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_a_confirm_rejects_a_name_its_own_step_captures(tmp_path: Path) -> None:
+    text = scenario('confirm = "is {cid} lit?"', "expect = 'client (?P<cid>\\w+)'")
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_a_prompt_with_doubled_braces_is_literal(tmp_path: Path) -> None:
+    from rustyfarian_bench.config import placeholders
+
+    text = 'examples = ["x"]\n[[step]]\nsay = "set {{x}}"\nconfirm = "is {{y}} up?"\n'
+    (step,) = load_scenario(tmp_path, text).scenarios[0].steps
+    assert step.say == "set {{x}}"  # rendering is a run-time concern
+    assert step.confirm == "is {{y}} up?"
+    assert placeholders((step.say,)) == set()
+
+
+def test_a_capture_named_like_a_reserved_field_still_loads_in_a_prompt(tmp_path: Path) -> None:
+    text = PROMPTING.replace("(?P<cid>", "(?P<mac>").replace("{cid}", "{mac}")
+    cfg = load_scenario(tmp_path, text)
+    assert cfg.scenarios[0].steps[1].say == "look at {mac}"
+
+
+def test_a_prompt_without_braces_loads_unchanged(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario('confirm = "ok?"'))
+    assert cfg.scenarios[0].steps[0].say == "s"
+
+
+# render_prompt: the run-time half; a value that is missing becomes a marker, not a failure.
+
+
+def test_render_prompt_fills_known_values_and_lacks_nothing() -> None:
+    from rustyfarian_bench.config import render_prompt
+
+    assert render_prompt("{port} on {board}", {"port": "/dev/x", "board": "s3"}) == (
+        "/dev/x on s3",
+        (),
+    )
+
+
+def test_render_prompt_marks_a_missing_value_and_reports_it() -> None:
+    from rustyfarian_bench.config import render_prompt
+
+    assert render_prompt("ip {ip}", {}) == ("ip {ip}?", ("ip",))
+
+
+def test_render_prompt_turns_doubled_braces_into_single_ones() -> None:
+    from rustyfarian_bench.config import render_prompt
+
+    assert render_prompt("press {{x}} on {port}", {"port": "p"}) == ("press {x} on p", ())
+    assert render_prompt("{{ip}}", {}) == ("{ip}", ())
+
+
+def test_render_prompt_lists_each_missing_name_once_in_order_of_appearance() -> None:
+    from rustyfarian_bench.config import render_prompt
+
+    shown, lacked = render_prompt("{b} {a} {b} {port}", {"port": "p"})
+    assert shown == "{b}? {a}? {b}? p"
+    assert lacked == ("b", "a")
+
+
+def test_render_prompt_leaves_a_text_without_fields_alone() -> None:
+    from rustyfarian_bench.config import render_prompt
+
+    assert render_prompt("plain text", {}) == ("plain text", ())
+    assert render_prompt("", {}) == ("", ())
+
+
+# {mac} is reserved for probe, run, teardown and prompts; setup never has a board.
+
+
+def test_setup_rejects_mac_with_its_index(tmp_path: Path) -> None:
+    text = hooked('setup = [["a"], ["up", "{mac}"]]')
+    with pytest.raises(ConfigError, match=r"setup\[1\].*unknown placeholder \{mac\}"):
+        load_scenario(tmp_path, text)
+
+
+@pytest.mark.parametrize("say", ["{port:d}", "{port!x}", "{port:{ip}}", "{port:{nope}}"])
+def test_a_bad_format_spec_or_conversion_in_a_prompt_is_rejected(tmp_path: Path, say: str) -> None:
+    text = f'examples = ["x"]\n[[step]]\nsay = "Plug into {say}"\nexpect = "a"\n'
+    with pytest.raises(ConfigError, match="bad placeholder"):
+        load_scenario(tmp_path, text)

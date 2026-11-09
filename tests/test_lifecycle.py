@@ -31,7 +31,7 @@ from .fakes import (
     timing_out,
     unstartable,
 )
-from .test_runner import CountingLines, _rows, _session
+from .test_runner import MAC, CountingLines, _rows, _session, _with_mac
 
 if TYPE_CHECKING:  # only named in a cast: tests that never open a probe need not import it
     from rustyfarian_bench.probe_lines import ProbeLines
@@ -865,3 +865,106 @@ def test_results_jsonl_has_empty_hooks_and_no_run_for_a_scenario_without_them(
     assert row["setup"] == []
     assert row["teardown"] == []
     assert cast(list[dict[str, object]], row["steps"])[0]["run"] is None
+
+
+# {mac}: reserved for run, probe and teardown; a prompt only gets a marker without one.
+
+
+def test_a_run_with_mac_unknown_fails_without_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = Step(say="act", run=("run-x", "{mac}"), expect=("a",))
+    rig = _hooked(tmp_path, monkeypatch, steps=(step,))
+
+    result = rig.run()
+
+    assert result.verdict == "fail"
+    assert result.steps[0].detail == "no value for {mac}: the board's MAC address is unknown"
+    assert rig.commands.calls == []
+
+
+def test_run_placeholders_include_the_detected_mac(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = Step(say="act", run=("run-x", "{port}", "{mac}"), duration=0.1)
+    rig = _hooked(tmp_path, monkeypatch, steps=(step,), judging="real")
+    _with_mac(monkeypatch)
+
+    result = rig.run()
+
+    assert result.verdict == "pass"
+    assert rig.commands.argvs == [["run-x", "/dev/x", MAC]]
+
+
+def test_a_run_command_never_takes_a_capture_named_mac_for_a_missing_mac(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        Step(say="learn", expect=(r"mac (?P<mac>\w+)",), arm=False, timeout=0.3),
+        Step(say="act", run=("run-x", "{mac}"), expect=("a",)),
+    )
+    rig = _hooked(tmp_path, monkeypatch, steps=steps, serial_lines=("mac zz",), judging="real")
+
+    result = rig.run()
+
+    assert result.steps[1].detail == "no value for {mac}: the board's MAC address is unknown"
+    assert rig.commands.calls == []
+
+
+def test_teardown_mac_unknown_is_not_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = _hooked(tmp_path, monkeypatch, teardown=(("td-mac", "{mac}"), ("td-x",)))
+
+    result = rig.run()
+
+    assert "td-mac" not in rig.commands.names
+    assert "td-x" in rig.commands.names  # the other teardown commands still are
+    skipped, ran = result.teardown
+    assert skipped.argv[0] == "td-mac"
+    assert skipped.error == "not run: {mac} unknown"
+    assert ran.ok
+    assert any("td-mac" in w or "{mac}" in w for w in rig.warnings)
+    assert result.verdict == "pass"
+
+
+def test_teardown_substitutes_the_mac_when_known(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = _hooked(tmp_path, monkeypatch, teardown=(("down", "{mac}"),))
+    _with_mac(monkeypatch)
+
+    result = rig.run()
+
+    assert rig.commands.argvs == [["down", MAC]]
+    assert all(rec.ok for rec in result.teardown)
+    assert rig.warnings == []
+
+
+def test_setup_hooks_never_get_a_mac(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = _hooked(tmp_path, monkeypatch, setup=(("up", "{example}", "{board}"),))
+    _with_mac(monkeypatch)
+
+    rig.run()
+
+    assert rig.commands.argvs == [["up", "ex", "s3"]]
+    assert all(MAC not in part for argv in rig.commands.argvs for part in argv)
+
+
+def test_a_prompt_and_a_probe_share_one_field_dict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        Step(say="learn", expect=(r"client (?P<cid>\w+)",), arm=False, timeout=0.3),
+        Step(say="watch {cid}", probe=("watch", "{cid}"), expect=("online",), timeout=0.3),
+    )
+    probes = FakeProbes(FakeProbeLines("online"))
+    rig = _hooked(
+        tmp_path, monkeypatch, steps=steps, probes=probes, serial_lines=("client abc1",),
+        judging="real",
+    )  # fmt: skip
+
+    result = rig.run()
+
+    assert result.verdict == "pass"
+    assert [c.argv for c in probes.calls] == [["watch", "abc1"]]
+    assert result.steps[1].say == "watch abc1"
+    assert result.steps[1].lacked == ()

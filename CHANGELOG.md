@@ -17,10 +17,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A failed setup is an `error` before anything is built or flashed; a failing teardown command is a warning.
 - `run = ["cmd", ...]` on an `expect` or `duration` step runs a host command after the reset and before judging, with `run_timeout` (default 30 s); a failing run fails the step.
   Each command's argv, exit code, duration and output tails are recorded, with a log beside the serial log.
+- `say` and `confirm` fill in `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures, so an attended step names the device to act on.
+  A missing value renders as `{ip}?` and the step still runs; the result records it in `lacked` and the runner warns once per step.
+- `{mac}` joins the placeholders of `probe`, `run` and `teardown` (not `setup`); when the MAC is unknown the use fails like a missing capture, and a teardown command is skipped.
 
 ### Changed
 
 - `results.jsonl` gains `setup` and `teardown` per example and `run` per step; the new fields are always present and the old keys are unchanged.
+- A literal brace in `say` or `confirm` now needs doubling (`{{`, `}}`); a stray brace or an unknown name is a config error at load time.
+- `results.jsonl` gains `steps[].lacked`, always present, a list of the prompt values that were missing.
 
 ## [0.4.0] - 2026-11-09
 

@@ -204,6 +204,16 @@ def _rows(tmp_path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in text.splitlines()]
 
 
+MAC = "aa:bb:cc:dd:ee:ff"
+
+
+def _with_mac(monkeypatch: pytest.MonkeyPatch, mac: str | None = MAC) -> None:
+    """Detect the board with `mac`; call after `_session`, which detects it without one."""
+    monkeypatch.setattr(
+        runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32s3", mac)
+    )
+
+
 @pytest.mark.parametrize(
     "exc",
     [

@@ -150,6 +150,15 @@ Captures are recorded in the step's result; a reference whose step was skipped b
 A later step that defines the same name takes it over: what it does not capture is cleared, never kept from the earlier step.
 Inside a character class, after `\`, or in a comment, `(?P=name)` is literal text, not a reference.
 
+### Prompt placeholders
+
+`say` and `confirm` may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures, so an attended step names the device to act on: `say = "Unplug {board} on {port} (MAC {mac})"`.
+A prompt is guidance, not a verdict: a value that is missing renders as `{ip}?` and the step still runs.
+The result records the names in `lacked`, and the runner warns once per step.
+A literal brace is written `{{` or `}}`.
+Captures do not cross a mode split, so an `--attended` run may show a marker for a capture made by an unattended step.
+`StepResult.say` (and `say` in `results.jsonl`) is the rendered text, as shown on the terminal.
+
 ### Host probes
 
 `probe = ["just", "mqtt-watch", "{example}"]` runs a host command and judges its stdout with the step's `expect`, `reject`, `settle` and `duration`, so a broker check needs no `confirm`.
@@ -216,10 +225,10 @@ Teardown always runs: after pass, fail, error, a failed setup and Ctrl-C.
 A second Ctrl-C skips the rest of teardown and stops the session.
 A failing teardown command is a warning; the verdict does not change.
 `setup` may use `{example}` and `{board}`.
-`teardown` may also use `{port}` and `{chip}`.
-If detection never happened, a teardown command that needs `{port}` or `{chip}` is skipped and recorded as `not run: {port} unknown`.
+`teardown` may also use `{port}`, `{chip}` and `{mac}`.
+If detection never happened, a teardown command that needs `{port}`, `{chip}` or `{mac}` is skipped and recorded as `not run: {port} unknown`.
 `run` is an argv list on an `expect` or `duration` step, never on `confirm`.
-It may use `{port}`, `{example}`, `{board}`, `{chip}` and earlier captures.
+It may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures.
 Per attempt the order is: arm prompt, reset, probe starts, `run`, judging.
 With a `probe`, the probe starts first so it can see what `run` causes.
 A `run` plus `duration` step does not drain serial, so the board's reaction is judged.
@@ -243,14 +252,15 @@ The definition is checked strictly when it loads, before anything is built:
 - `timeout` and `duration` must be greater than 0, and `settle` must be 0 or more.
 - Regexes must compile, and a `(?P=name)` reference needs an earlier step that captures `name`.
 - Commands may use only `{example}`, plus `{port}` in `flash`.
-- A `probe` must be a non-empty list of strings, and may use only `{port}`, `{example}`, `{board}`, `{chip}` and names an earlier step captures; the reserved names win over a capture of the same name.
+- A `probe` must be a non-empty list of strings, and may use only `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and names an earlier step captures; the reserved names win over a capture of the same name.
 - A `probe` needs `expect` or `duration`, and cannot be combined with `confirm` or `reset`; `attended` is allowed.
 - `serial_reject` needs `probe` and must compile.
 - `run` must be a non-empty list of strings, needs `expect` or `duration`, and cannot be combined with `confirm`.
 - `run_timeout` must be greater than 0 and needs `run`.
-- `setup` and `teardown` must be lists of argv lists; `setup` may use only `{example}` and `{board}`, `teardown` also `{port}` and `{chip}`.
+- `setup` and `teardown` must be lists of argv lists; `setup` may use only `{example}` and `{board}`, `teardown` also `{port}`, `{chip}` and `{mac}`.
+- `say` and `confirm` are checked like `probe`: only the reserved names and earlier captures, and a stray brace is an error; a literal brace is written `{{` or `}}`.
 - `hook_timeout` must be greater than 0.
-- A probe placeholder whose capture is missing at run time fails the step at once, before the command starts.
+- A probe placeholder whose capture is missing at run time fails the step at once, before the command starts; so does `{mac}` when the board's MAC is unknown.
 - `examples` must not be empty, and the names must not contain `/` or `..`.
 - A board's `checks` must not list a name twice.
 

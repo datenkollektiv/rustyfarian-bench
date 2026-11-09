@@ -14,7 +14,7 @@ import math
 import re
 import string
 import tomllib
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -51,8 +51,8 @@ class Board:
     usb_serial: str | None = None
 
 
-# Placeholders a probe command may use besides the names earlier steps captured.
-PROBE_FIELDS = frozenset({"port", "example", "board", "chip"})
+# Placeholders a probe command or a prompt may use besides the names earlier steps captured.
+PROBE_FIELDS = frozenset({"port", "example", "board", "chip", "mac"})
 # Placeholders a scenario's `setup` may use: it runs before the board is detected.
 SETUP_FIELDS = frozenset({"example", "board"})
 
@@ -74,10 +74,15 @@ class Step:
     - `reset`: reset the board once the step starts (after Enter when armed), for a check
       the firmware runs at boot, e.g. a calibration window.
     - `probe`: a host command (argv) whose stdout is judged instead of the serial lines, with
-      `expect` or `duration`; `{port}`, `{example}`, `{board}`, `{chip}` and captures fill in.
+      `expect` or `duration`; `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and captures
+      fill in.
     - `serial_reject`: with `probe`, a pattern that fails the step when a serial line matches it.
     - `run`: a host command (argv) run once the step starts, before it is judged; same
       placeholders as `probe`. A failing command fails the step. `run_timeout` bounds it.
+
+    `say` and `confirm` take the same placeholders, `{mac}` included; a value that is missing
+    at run time shows as a marker such as `{ip}?` and never fails the prompt. A literal brace
+    is written `{{` or `}}`.
 
     A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text;
     a later step's `expect` or `reject` refers to it as `(?P=pole)`, matched literally.
@@ -297,26 +302,59 @@ def _read_toml(path: Path) -> dict[str, Any]:
         raise ConfigError(f"{path}: {e}") from None
 
 
+def _check_fields(part: str, where: str, allowed: set[str]) -> None:
+    """Fail on a brace that is malformed or names a field outside `allowed`."""
+    try:
+        fields = [f for _, f, _, _ in string.Formatter().parse(part) if f is not None]
+    except ValueError as e:
+        raise ConfigError(f"{where}: bad placeholder in {part!r}: {e}") from None
+    bad = [f for f in fields if f not in allowed]
+    if bad:
+        raise ConfigError(f"{where}: unknown placeholder {{{bad[0]}}}; allowed: {sorted(allowed)}")
+    try:  # a dry run catches bad conversions, format specs and fields nested in a spec
+        string.Formatter().vformat(part, (), dict.fromkeys(allowed, "x"))
+    except (ValueError, KeyError, IndexError) as e:
+        raise ConfigError(f"{where}: bad placeholder in {part!r}: {e}") from None
+
+
 def _command(value: Any, where: str, allowed: set[str]) -> tuple[str, ...]:
     command = _str_tuple(value, where)
     if not command:
         raise ConfigError(f"{where}: must not be empty")
     for part in command:
-        try:
-            fields = [f for _, f, _, _ in string.Formatter().parse(part) if f is not None]
-        except ValueError as e:
-            raise ConfigError(f"{where}: bad placeholder in {part!r}: {e}") from None
-        bad = [f for f in fields if f not in allowed]
-        if bad:
-            raise ConfigError(
-                f"{where}: unknown placeholder {{{bad[0]}}}; allowed: {sorted(allowed)}"
-            )
+        _check_fields(part, where, allowed)
     return command
 
 
 def placeholders(command: Iterable[str]) -> set[str]:
     """Field names a command's parts use, e.g. `{example}`; `{{` escapes are not fields."""
     return {f for part in command for _, f, _, _ in string.Formatter().parse(part) if f is not None}
+
+
+class _Prompt(string.Formatter):
+    """Fills a prompt; a name with no value becomes `{name}?` and is noted in `lacked`."""
+
+    def __init__(self, values: dict[str, str]):
+        super().__init__()
+        self.values = values
+        self.lacked: list[str] = []
+
+    def get_value(self, key: int | str, args: Sequence[Any], kwargs: Mapping[str, Any]) -> str:
+        name = str(key)
+        if name in self.values:
+            return self.values[name]
+        if name not in self.lacked:
+            self.lacked.append(name)
+        return f"{{{name}}}?"
+
+
+def render_prompt(text: str, values: dict[str, str]) -> tuple[str, tuple[str, ...]]:
+    """A `say` or `confirm` with its fields filled in, and the names that had no value.
+
+    A missing value shows as `{name}?`; each missing name is listed once, in order of appearance.
+    """
+    prompt = _Prompt(values)
+    return prompt.vformat(text, (), {}), tuple(prompt.lacked)
 
 
 def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) -> Step:
@@ -367,6 +405,10 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
     if settle < 0:
         raise ConfigError(f"{where}: 'settle' must be >= 0")
     confirm = _text(raw, "confirm", where)
+    allowed = set(PROBE_FIELDS | captures)
+    _check_fields(say, f"{where}: say", allowed)
+    if confirm is not None:
+        _check_fields(confirm, f"{where}: confirm", allowed)
     kinds = sum(k in raw for k in ("expect", "duration", "confirm"))
     if kinds != 1:
         raise ConfigError(f"{where}: needs exactly one of 'expect', 'duration' or 'confirm'")
@@ -374,7 +416,7 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
     reset = _bool(raw, "reset", False, where)
     probe: tuple[str, ...] = ()
     if "probe" in raw:
-        probe = _command(raw["probe"], f"{where}: probe", set(PROBE_FIELDS | captures))
+        probe = _command(raw["probe"], f"{where}: probe", allowed)
         for key, used in (("confirm", confirm is not None), ("reset", reset)):
             if used:
                 raise ConfigError(f"{where}: 'probe' cannot be combined with '{key}'")
@@ -387,7 +429,7 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
     if "run" in raw:
         if confirm is not None:
             raise ConfigError(f"{where}: 'run' cannot be combined with 'confirm'")
-        run = _command(raw["run"], f"{where}: run", set(PROBE_FIELDS | captures))
+        run = _command(raw["run"], f"{where}: run", allowed)
     run_timeout = _number(raw, "run_timeout", 30.0, where)
     assert run_timeout is not None
     if "run_timeout" in raw:

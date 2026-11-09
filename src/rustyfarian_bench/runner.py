@@ -25,6 +25,7 @@ from .config import (
     defines,
     placeholders,
     references,
+    render_prompt,
     resolve,
 )
 from .probe_lines import ProbeLines
@@ -76,6 +77,11 @@ def _run(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
         return subprocess.run(argv, cwd=repo, env=device.ESPFLASH_ENV).returncode == 0
     except (FileNotFoundError, PermissionError) as e:
         raise device.missing_tool(argv[0], e) from e
+
+
+def _warn_lacked(lacked: tuple[str, ...]) -> None:
+    if lacked:
+        ui.warn("prompt lacked " + " ".join(f"{{{name}}}" for name in lacked))
 
 
 def _overall(verdicts: list[str]) -> str:
@@ -332,7 +338,7 @@ class Session:
         port or chip of a board that was never detected is not run. Ctrl-C skips the rest.
         """
         log = self._log_path(scenario, example, stamp)
-        known = {"port": r.port, "chip": r.chip}
+        known = {"port": r.port, "chip": r.chip, "mac": r.mac}
         try:
             for i, command in enumerate(scenario.teardown, 1):
                 path = log.with_name(f"{log.stem}.teardown{i}{log.suffix}")
@@ -346,7 +352,13 @@ class Session:
                     ui.warn(f"teardown: {' '.join(command)}: {text}")
                     continue
                 argv = [
-                    part.format(port=r.port, chip=r.chip, example=example, board=scenario.board.key)
+                    part.format(
+                        port=r.port,
+                        chip=r.chip,
+                        mac=r.mac,
+                        example=example,
+                        board=scenario.board.key,
+                    )
                     for part in command
                 ]
                 try:
@@ -406,6 +418,18 @@ class Session:
                         captured.pop(name, None)
                     continue
                 n += 1
+                # What a prompt, a probe or a run may use: only values that exist. A capture
+                # never stands in for a reserved name, so an unknown `{mac}` stays unknown.
+                subst = {k: v for k, v in captured.items() if k not in PROBE_FIELDS}
+                subst |= {"port": d.port, "example": example, "board": board.key, "chip": d.chip}
+                if d.mac is not None:
+                    subst["mac"] = d.mac
+                say, lacked = render_prompt(step.say, subst)
+                confirm = None
+                if step.confirm is not None:
+                    confirm, more = render_prompt(step.confirm, subst)
+                    lacked += tuple(name for name in more if name not in lacked)
+                unset = placeholders((*step.probe, *step.run)) - set(subst)
                 missing = [
                     f"(?P={name})"
                     for name in sorted(
@@ -416,15 +440,16 @@ class Session:
                         }
                         - set(captured)
                     )
-                ] + sorted(placeholders((*step.probe, *step.run)) - PROBE_FIELDS - set(captured))
-                if missing:
-                    ui.step(n, total, step.say)
-                    res = StepResult(
-                        step.say,
-                        False,
-                        f"nothing captured for {missing[0]}: its step was skipped or failed",
-                        optional=step.optional,
+                ] + sorted(unset - PROBE_FIELDS)
+                if missing or unset:
+                    ui.step(n, total, say)
+                    _warn_lacked(lacked)
+                    detail = (
+                        f"nothing captured for {missing[0]}: its step was skipped or failed"
+                        if missing
+                        else "no value for {mac}: the board's MAC address is unknown"
                     )
+                    res = StepResult(say, False, detail, optional=step.optional, lacked=lacked)
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
                     r.steps.append(res)
                     for name in declared:
@@ -434,17 +459,10 @@ class Session:
                     ):
                         break
                     continue
-                # Reserved names win over a capture of the same name; taken before the
-                # step's own declarations drop their old values.
-                subst = {
-                    **captured,
-                    "port": d.port,
-                    "example": example,
-                    "board": board.key,
-                    "chip": d.chip,
-                }
                 step = replace(
                     step,
+                    say=say,
+                    confirm=confirm,
                     expect=tuple(resolve(p, captured) for p in step.expect),
                     reject=resolve(step.reject, captured) if step.reject else None,
                     serial_reject=(
@@ -475,12 +493,14 @@ class Session:
                         else None
                     )
                     res = self._attempt(step, subst, lines, log, n, seconds, stop)
+                    res = replace(res, lacked=lacked)
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
                     # `-y` must not retry: answering its default (yes) would loop forever.
                     if not res.failed or self.opts.assume_yes:
                         break
                     if not self._ask_muted(lines, "Retry this step?"):
                         break
+                _warn_lacked(lacked)
                 if res.failed and not self.opts.assume_yes:
                     res = replace(res, note=self._note_quietly(lines))
                 captured.update(res.captured)

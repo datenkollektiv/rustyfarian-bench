@@ -24,6 +24,7 @@ class StepResult:
     captured: dict[str, str] = field(default_factory=dict)  # named groups its expect matched
     evidence: tuple[str, ...] = ()  # the line each `expect` pattern matched, in order
     run: CommandRecord | None = None  # the host command the step ran before judging
+    lacked: tuple[str, ...] = ()  # prompt fields with no value, shown as `{name}?`
 
     @property
     def counts_as_pass(self) -> bool:
