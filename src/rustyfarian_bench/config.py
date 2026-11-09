@@ -14,7 +14,7 @@ import math
 import re
 import string
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -51,6 +51,10 @@ class Board:
     usb_serial: str | None = None
 
 
+# Placeholders a probe command may use besides the names earlier steps captured.
+PROBE_FIELDS = frozenset({"port", "example", "board", "chip"})
+
+
 @dataclass(frozen=True)
 class Step:
     """One guided step.
@@ -67,6 +71,8 @@ class Step:
       `--unattended` skips it and `--attended` keeps it.
     - `reset`: reset the board once the step starts (after Enter when armed), for a check
       the firmware runs at boot, e.g. a calibration window.
+    - `probe`: a host command (argv) whose stdout is judged instead of the serial lines, with
+      `expect` or `duration`; `{port}`, `{example}`, `{board}`, `{chip}` and captures fill in.
 
     A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text;
     a later step's `expect` or `reject` refers to it as `(?P=pole)`, matched literally.
@@ -83,6 +89,7 @@ class Step:
     arm: bool = True
     attended: bool = False
     reset: bool = False
+    probe: tuple[str, ...] = ()
 
     @property
     def needs_person(self) -> bool:
@@ -295,6 +302,11 @@ def _command(value: Any, where: str, allowed: set[str]) -> tuple[str, ...]:
     return command
 
 
+def placeholders(command: Iterable[str]) -> set[str]:
+    """Field names a command's parts use, e.g. `{example}`; `{{` escapes are not fields."""
+    return {f for part in command for _, f, _, _ in string.Formatter().parse(part) if f is not None}
+
+
 def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) -> Step:
     """One `[[step]]`; `captures` are the group names earlier steps' `expect` patterns capture."""
     if not isinstance(raw, dict):
@@ -311,6 +323,7 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
         "arm",
         "attended",
         "reset",
+        "probe",
     }
     unknown = set(raw) - known
     if unknown:
@@ -342,6 +355,18 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
     kinds = sum(k in raw for k in ("expect", "duration", "confirm"))
     if kinds != 1:
         raise ConfigError(f"{where}: needs exactly one of 'expect', 'duration' or 'confirm'")
+    attended = _bool(raw, "attended", False, where)
+    reset = _bool(raw, "reset", False, where)
+    probe: tuple[str, ...] = ()
+    if "probe" in raw:
+        probe = _command(raw["probe"], f"{where}: probe", set(PROBE_FIELDS | captures))
+        for key, used in (
+            ("confirm", confirm is not None),
+            ("attended", attended),
+            ("reset", reset),
+        ):
+            if used:
+                raise ConfigError(f"{where}: 'probe' cannot be combined with '{key}'")
     return Step(
         say=say,
         expect=expect,
@@ -352,8 +377,9 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
         confirm=confirm,
         optional=_bool(raw, "optional", False, where),
         arm=_bool(raw, "arm", True, where),
-        attended=_bool(raw, "attended", False, where),
-        reset=_bool(raw, "reset", False, where),
+        attended=attended,
+        reset=reset,
+        probe=probe,
     )
 
 

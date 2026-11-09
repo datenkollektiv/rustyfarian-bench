@@ -22,6 +22,8 @@ from .config import ResetMode
 
 
 class LineSource(Protocol):
+    lost_text: str  # what a step says when `link_lost_since` is True
+
     def get(self, timeout: float) -> str | None: ...
 
     def drain(self) -> None: ...
@@ -58,6 +60,8 @@ PULSE_WAIT = 5.0
 
 
 class SerialLines:
+    lost_text = "serial connection lost"
+
     def __init__(
         self,
         port: str,

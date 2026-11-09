@@ -139,6 +139,8 @@ Each step has `say` and exactly one of:
 | `duration` | `reject` never matches and the serial link stays up for that many seconds |
 | `confirm`  | the operator answers yes                                                  |
 
+`probe` is a modifier on `expect` or `duration` that takes the lines from a host command instead of the serial port (see "Host probes").
+
 Modifiers: `reject` (fails the step on match), `settle` (keep watching `reject` after the last `expect`), `optional` (a miss is a warning), `attended` (the step needs a person although it has no `confirm`, e.g. a PIR or a button press), `reset` (reset the board once the step starts, after Enter when armed, for a check the firmware runs at boot such as a calibration window; not on a `reset = "none"` board).
 `expect` steps also see lines printed before the step started (e.g. the boot banner); `duration` steps only judge new lines.
 
@@ -148,11 +150,41 @@ Captures are recorded in the step's result; a reference whose step was skipped b
 A later step that defines the same name takes it over: what it does not capture is cleared, never kept from the earlier step.
 Inside a character class, after `\`, or in a comment, `(?P=name)` is literal text, not a reference.
 
+### Host probes
+
+`probe = ["just", "mqtt-watch", "{example}"]` runs a host command and judges its stdout with the step's `expect`, `reject`, `settle` and `duration`, so a broker check needs no `confirm`.
+The command is an argv list, with no shell.
+stdout is matched.
+stderr is only written to the log and echoed.
+The command runs in the consumer directory, in its own process group.
+At the end of the step the group gets SIGTERM, and SIGKILL after 2 s, so a `just` wrapper and its children go too.
+The command's own log is `<example>-<stamp>.probe<N>.log` beside the serial log.
+A command that exits before the step ends counts as a lost link, so `settle` and `duration` need a watcher that keeps running.
+When a step fails, the detail adds `probe exited N` and the last stderr lines.
+The tool must flush each line: `python -u`, `stdbuf -oL`.
+Probe steps need no person: `--unattended` runs them and `--attended` skips them.
+Serial lines are not judged during a probe step; a lost serial link is only warned about afterwards.
+A retry starts the command again, so a probe must be a passive watcher.
+A command that cannot start is an `error` result and ends the session, like a missing build tool.
+Probes are POSIX only (macOS and Linux).
+
+```toml
+[[step]]
+say = "Watch the broker for status and two heartbeats"
+probe = ["just", "mqtt-watch", "{example}"]
+expect = ['status online', 'heartbeat \d+', 'heartbeat \d+']
+reject = 'Connection refused'
+timeout = 60
+```
+
 The definition is checked strictly when it loads, before anything is built:
 - Booleans and numbers must be real TOML values, so `optional = "false"` is an error rather than true.
 - `timeout` and `duration` must be greater than 0, and `settle` must be 0 or more.
 - Regexes must compile, and a `(?P=name)` reference needs an earlier step that captures `name`.
 - Commands may use only `{example}`, plus `{port}` in `flash`.
+- A `probe` must be a non-empty list of strings, and may use only `{port}`, `{example}`, `{board}`, `{chip}` and names an earlier step captures; the reserved names win over a capture of the same name.
+- A `probe` needs `expect` or `duration`, and cannot be combined with `confirm`, `attended` or `reset`.
+- A probe placeholder whose capture is missing at run time fails the step at once, before the command starts.
 - `examples` must not be empty, and the names must not contain `/` or `..`.
 - A board's `checks` must not list a name twice.
 

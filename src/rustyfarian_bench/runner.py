@@ -5,13 +5,27 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
+from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from . import device, ui
-from .config import BenchConfig, Board, Scenario, Step, defines, references, resolve
+from .config import (
+    PROBE_FIELDS,
+    BenchConfig,
+    Board,
+    Scenario,
+    Step,
+    defines,
+    placeholders,
+    references,
+    resolve,
+)
+from .probe_lines import ProbeLines
 from .serial_lines import SerialLines
 from .steps import StepResult, run_step
 
@@ -73,9 +87,16 @@ def _overall(verdicts: list[str]) -> str:
 
 
 class Session:
-    def __init__(self, cfg: BenchConfig, opts: Options):
+    def __init__(
+        self,
+        cfg: BenchConfig,
+        opts: Options,
+        *,
+        open_probe: Callable[..., ProbeLines] = ProbeLines,
+    ):
         self.cfg = cfg
         self.opts = opts
+        self.open_probe = open_probe  # (argv, cwd, log_path) -> a probe step's line source
         self.device: device.Device | None = None
         self.results: list[ExampleResult] = []
         self.stopped = (
@@ -290,16 +311,19 @@ class Session:
                         captured.pop(name, None)
                     continue
                 n += 1
-                missing = sorted(
-                    {name for p in (*step.expect, step.reject or "") for name in references(p)}
-                    - set(captured)
-                )
+                missing = [
+                    f"(?P={name})"
+                    for name in sorted(
+                        {name for p in (*step.expect, step.reject or "") for name in references(p)}
+                        - set(captured)
+                    )
+                ] + sorted(placeholders(step.probe) - PROBE_FIELDS - set(captured))
                 if missing:
                     ui.step(n, total, step.say)
                     res = StepResult(
                         step.say,
                         False,
-                        f"nothing captured for (?P={missing[0]}): its step was skipped or failed",
+                        f"nothing captured for {missing[0]}: its step was skipped or failed",
                         optional=step.optional,
                     )
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
@@ -311,6 +335,15 @@ class Session:
                     ):
                         break
                     continue
+                # Reserved names win over a capture of the same name; taken before the
+                # step's own declarations drop their old values.
+                subst = {
+                    **captured,
+                    "port": d.port,
+                    "example": example,
+                    "board": board.key,
+                    "chip": d.chip,
+                }
                 step = replace(
                     step,
                     expect=tuple(resolve(p, captured) for p in step.expect),
@@ -331,8 +364,9 @@ class Session:
                                 )
                             else:
                                 self._ready_quietly(lines, step.say)
-                        lines.drain()
-                    unreset = step.reset and not lines.reset()
+                        if not step.probe:
+                            lines.drain()
+                    unreset = step.reset and not step.probe and not lines.reset()
                     # An attended watch ends early on Enter: the operator has seen enough.
                     stop = (
                         ui.enter_pressed
@@ -344,6 +378,15 @@ class Session:
                             step.say, False, "the board did not reset", optional=step.optional
                         )
                         if unreset
+                        else self._run_probe(
+                            step,
+                            [part.format(**subst) for part in step.probe],
+                            lines,
+                            log,
+                            n,
+                            seconds,
+                        )
+                        if step.probe
                         else run_step(
                             step,
                             lines,
@@ -378,6 +421,31 @@ class Session:
         r.detail = f"{passed}/{len(selected)} steps passed"
         if unverified:
             r.detail += f", {len(unverified)} unverified"
+
+    def _run_probe(
+        self,
+        step: Step,
+        argv: list[str],
+        serial: SerialLines,
+        log: Path,
+        n: int,
+        seconds: float | None,
+    ) -> StepResult:
+        """Run a probe step against its command's stdout; the serial lines are not judged."""
+        ui.info("$ " + " ".join(argv))
+        started = time.monotonic()
+        probe_log = log.with_name(f"{log.stem}.probe{n}{log.suffix}")
+        with ExitStack() as stack:
+            try:
+                probe = stack.enter_context(self.open_probe(argv, self.opts.repo, probe_log))
+            except (FileNotFoundError, PermissionError) as e:
+                raise device.missing_tool(argv[0], e) from e
+            res = run_step(step, probe, lambda q: self._ask_quietly(serial, q), duration=seconds)
+            if res.failed:
+                res = replace(res, detail=f"{res.detail}; {probe.exit_note()}")
+        if serial.link_lost_since(started):
+            ui.warn("serial connection lost during this step; the board was not judged")
+        return res
 
     def _record(self, scenario: Scenario, r: ExampleResult) -> None:
         path = self.cfg.board_dir(scenario.board) / "results.jsonl"

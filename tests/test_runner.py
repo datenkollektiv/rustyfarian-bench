@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -13,7 +15,10 @@ from rustyfarian_bench.config import BenchConfig, Board, Scenario, Step
 from rustyfarian_bench.device import Device
 from rustyfarian_bench.steps import StepResult
 
-from .fakes import FakeLines
+from .fakes import FakeLines, FakeProbeLines, FakeProbes
+
+if TYPE_CHECKING:  # only named in a cast: the other tests need not import the probe module
+    from rustyfarian_bench.probe_lines import ProbeLines
 
 _REAL_RUN = runner._run
 
@@ -1282,3 +1287,372 @@ def test_a_reference_to_a_skipped_step_fails_without_waiting(
     assert result.steps[0].detail == (
         "nothing captured for (?P=pole): its step was skipped or failed"
     )
+
+
+# Host probes: a step whose lines come from a command on the host, not from the serial port.
+
+MISSING_CAPTURE = "nothing captured for (?P=tok): its step was skipped or failed"
+
+
+def _watch() -> Step:
+    return Step(
+        say="watch the broker",
+        probe=("just", "mqtt-watch", "{example}"),
+        expect=("online",),
+        timeout=0.3,
+    )
+
+
+class CountingLines(FakeLines):
+    """Serial lines that count the resets asked of them."""
+
+    def __init__(self, *lines: str) -> None:
+        super().__init__(*lines)
+        self.resets = 0
+
+    def reset(self, timeout: float = 5.0) -> bool:
+        self.resets += 1
+        return True
+
+
+def _probed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    steps: tuple[Step, ...],
+    *,
+    serial: FakeLines | None = None,
+    probes: FakeProbes | None = None,
+    mode: runner.Mode | None = None,
+    yes: bool = True,
+) -> tuple[runner.Session, Scenario, FakeLines, FakeProbes]:
+    serial = FakeLines() if serial is None else serial
+    probes = FakeProbes() if probes is None else probes
+    session, scenario = _session(tmp_path, monkeypatch, serial, yes=yes)
+    session = runner.Session(
+        session.cfg, session.opts, open_probe=cast("Callable[..., ProbeLines]", probes)
+    )
+    session.opts.mode = mode
+    return session, replace(scenario, steps=steps), serial, probes
+
+
+def test_attended_mode_spawns_no_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    steps = (_watch(), Step(say="look", confirm="ok?"))
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, steps, mode="attended")
+
+    result = session.run_example(scenario, "ex")
+
+    assert probes.calls == []
+    assert [s.say for s in result.steps] == ["look"]
+
+
+def test_unattended_mode_spawns_the_probe_once_in_the_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (_watch(), Step(say="look", confirm="ok?"))
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, probes = _probed(
+        tmp_path, monkeypatch, steps, probes=probes, mode="unattended"
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    [call] = probes.calls
+    assert call.argv == ["just", "mqtt-watch", "ex"]
+    assert call.cwd == tmp_path
+    assert call.log_path.parent == tmp_path / "bench/s3/logs"
+    assert call.log_path.name.endswith(".probe1.log")
+    assert [s.say for s in result.steps] == ["watch the broker"]
+    assert result.verdict == "pass"
+
+
+def test_without_a_mode_probe_and_serial_steps_run_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        Step(say="first", expect=("a",), timeout=0.3, arm=False),
+        _watch(),
+        Step(say="last", expect=("b",), timeout=0.3, arm=False),
+    )
+    serial = FakeLines("a", "b")
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, serial, probes = _probed(
+        tmp_path, monkeypatch, steps, serial=serial, probes=probes
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert [s.say for s in result.steps] == ["first", "watch the broker", "last"]
+    assert result.verdict == "pass"
+    assert len(probes.calls) == 1
+    assert list(serial.queue) == []
+
+
+def test_a_probe_steps_evidence_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = replace(_watch(), expect=("status online", r"heartbeat \d+"))
+    probes = FakeProbes(FakeProbeLines("noise", "status online", "heartbeat 3"))
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,), probes=probes)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.steps[0].evidence == ("status online", "heartbeat 3")
+    [row] = _rows(tmp_path)
+    steps = cast(list[dict[str, object]], row["steps"])
+    assert steps[0]["evidence"] == ["status online", "heartbeat 3"]
+
+
+@pytest.mark.parametrize("exc", [FileNotFoundError("just"), PermissionError("just")])
+def test_a_probe_that_cannot_start_is_an_error_and_stops_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: OSError
+) -> None:
+    session, scenario, serial, _ = _probed(
+        tmp_path, monkeypatch, (_watch(),), probes=FakeProbes(error=exc)
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "error"
+    assert "cannot run 'just'" in result.detail
+    assert session.stopped
+    assert serial.exited == 1  # the port is released
+    assert [r["verdict"] for r in _rows(tmp_path)] == ["error"]
+
+
+def test_a_serial_capture_fills_a_probe_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        Step(say="learn", expect=(r"client (?P<cid>\w+)",), timeout=0.3, arm=False),
+        replace(_watch(), probe=("watch", "{cid}"), arm=False),
+    )
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, probes = _probed(
+        tmp_path, monkeypatch, steps, serial=FakeLines("client abc1"), probes=probes
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert [c.argv for c in probes.calls] == [["watch", "abc1"]]
+
+
+def test_a_probe_capture_feeds_a_later_serial_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        replace(_watch(), expect=(r"token (?P<tok>\d+)",)),
+        Step(say="echoed", expect=(r"echo (?P=tok)",), timeout=0.3, arm=False),
+    )
+    probes = FakeProbes(FakeProbeLines("token 7"))
+    session, scenario, _, _ = _probed(
+        tmp_path, monkeypatch, steps, serial=FakeLines("echo 7"), probes=probes
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert result.steps[0].captured == {"tok": "7"}
+
+
+def test_a_failed_probe_drops_what_it_would_have_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        replace(_watch(), expect=(r"token (?P<tok>\d+)",), optional=True),
+        Step(say="echoed", expect=(r"echo (?P=tok)",), timeout=0.3, arm=False),
+    )
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, steps, serial=FakeLines("echo 7"))
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.steps[1].detail == MISSING_CAPTURE
+
+
+def test_a_probe_skipped_by_the_mode_drops_what_it_would_have_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        replace(_watch(), expect=(r"token (?P<tok>\d+)",)),
+        Step(say="echoed", expect=(r"echo (?P=tok)",), timeout=0.3, arm=False, attended=True),
+    )
+    session, scenario, _, probes = _probed(
+        tmp_path, monkeypatch, steps, serial=FakeLines("echo 7"), mode="attended"
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert probes.calls == []
+    assert result.steps[0].detail == MISSING_CAPTURE
+
+
+def test_every_reserved_placeholder_is_substituted_per_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = replace(_watch(), probe=("watch", "{port}", "{example}", "{board}", "{chip}"))
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, (step,))
+
+    session.run_example(scenario, "ex")
+
+    assert [c.argv for c in probes.calls] == [["watch", "/dev/x", "ex", "s3", "esp32s3"]]
+
+
+def test_a_reserved_placeholder_wins_over_a_capture_of_the_same_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (
+        Step(say="learn", expect=(r"port (?P<port>\w+)",), timeout=0.3, arm=False),
+        replace(_watch(), probe=("watch", "{port}"), arm=False),
+    )
+    session, scenario, _, probes = _probed(
+        tmp_path, monkeypatch, steps, serial=FakeLines("port zzz")
+    )
+
+    session.run_example(scenario, "ex")
+
+    assert [c.argv for c in probes.calls] == [["watch", "/dev/x"]]
+
+
+def test_a_probe_placeholder_nothing_captured_fails_without_spawning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = replace(_watch(), probe=("watch", "{cid}"))
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, (step,))
+
+    result = session.run_example(scenario, "ex")
+
+    assert probes.calls == []
+    assert result.verdict == "fail"
+    assert result.steps[0].detail.startswith("nothing captured for cid")
+
+
+def test_a_probe_step_leaves_the_serial_backlog_and_board_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serial = CountingLines("old line")
+    probes = FakeProbes(FakeProbeLines("online"))
+    step = replace(_watch(), reset=True)  # as if it got past the loader
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,), serial=serial, probes=probes)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert serial.drained == 0
+    assert serial.resets == 0
+
+
+def test_a_probe_step_still_waits_for_enter_when_armed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompts: list[str] = []
+    monkeypatch.setattr(ui, "ready", lambda msg: prompts.append(f"ready:{msg}"))
+    monkeypatch.setattr(ui, "ask", lambda q, default=True: True)
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, serial, _ = _probed(
+        tmp_path, monkeypatch, (_watch(),), probes=probes, yes=False
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert prompts == ["ready:watch the broker"]
+    assert result.verdict == "pass"
+    assert serial.drained == 0
+
+
+def test_serial_lines_are_not_judged_during_a_probe_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = replace(_watch(), reject="PANIC")
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, serial, _ = _probed(
+        tmp_path, monkeypatch, (step,), serial=FakeLines("PANIC"), probes=probes
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert list(serial.queue) == ["PANIC"]
+
+
+def test_a_probe_can_watch_for_a_duration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    step = Step(say="quiet broker", probe=("watch",), duration=0.2, reject="refused")
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,))
+
+    assert session.run_example(scenario, "ex").verdict == "pass"
+
+
+def test_a_failed_probe_says_how_the_command_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = FakeProbeLines(note="probe exited 3: connection refused")
+    gone.lost = True
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (_watch(),), probes=FakeProbes(gone))
+
+    result = session.run_example(scenario, "ex")
+
+    detail = result.steps[0].detail
+    assert result.verdict == "fail"
+    assert "probe command exited" in detail
+    assert "probe exited 3: connection refused" in detail
+    assert "serial connection lost" not in detail
+
+
+def test_the_probe_is_torn_down_after_a_failing_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, (_watch(),))
+
+    result = session.run_example(scenario, "ex")  # the probe says nothing: a timeout
+
+    assert result.verdict == "fail"
+    assert [p.exited for p in probes.opened] == [1]
+
+
+def test_the_probe_is_torn_down_when_the_step_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def raising(
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
+    ) -> StepResult:
+        raise RuntimeError("boom")
+
+    session, scenario, serial, probes = _probed(tmp_path, monkeypatch, (_watch(),))
+    monkeypatch.setattr(runner, "run_step", raising)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "error"
+    assert [p.exited for p in probes.opened] == [1]
+    assert serial.exited == 1
+
+
+def test_a_serial_link_lost_during_a_probe_only_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(ui, "warn", warnings.append)
+    serial = FakeLines()
+    serial.lost = True
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, _ = _probed(
+        tmp_path, monkeypatch, (_watch(),), serial=serial, probes=probes
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert any("serial" in w.lower() for w in warnings)
+    assert serial.lost_since_args
+
+
+def test_a_steady_serial_link_during_a_probe_says_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(ui, "warn", warnings.append)
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (_watch(),), probes=probes)
+
+    session.run_example(scenario, "ex")
+
+    assert warnings == []

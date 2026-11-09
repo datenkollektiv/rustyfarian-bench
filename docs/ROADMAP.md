@@ -11,6 +11,7 @@ timeline
     section Ready
         Verdict reliability (feature-doc) : no false passes — `--yes` marks confirm steps unverified, a lost serial link fails watch windows, strict config, errors recorded
         Remote distribution (feature-doc) : a fresh consumer clone runs `just bench` via a pinned `uvx` install from GitHub, no rustyfarian-bench checkout needed
+        Host probes (feature-doc) : a `probe` command step streams host output such as a broker watcher through `expect`/`reject`, so the broker confirm questions run unattended
     section Near term
         Result traceability : results record the consumer git revision, dirty flag and scenario hash
         Cross-repo recipe : `just bench repo target` runs a sibling consumer's checks from this checkout

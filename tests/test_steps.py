@@ -7,7 +7,7 @@ import pytest
 from rustyfarian_bench.config import Step
 from rustyfarian_bench.steps import StepResult, run_step
 
-from .fakes import FakeLines
+from .fakes import FakeLines, FakeProbeLines
 
 
 def never(_: str) -> bool:
@@ -305,3 +305,47 @@ def test_a_settle_failure_keeps_the_evidence_it_had() -> None:
     res = run_step(step, FakeLines(*PRESSES, "t=900 ms  pressed  (count=4)"), never)
     assert not res.ok
     assert res.evidence == ("t=600 ms  pressed  (count=3)",)
+
+
+def test_serial_lines_name_the_loss_as_a_serial_connection() -> None:
+    assert FakeLines.lost_text == "serial connection lost"
+
+
+def test_a_lost_probe_reads_the_sources_own_text_in_a_duration_step() -> None:
+    lines = FakeProbeLines()
+    lines.lost = True
+    res = run_step(Step(say="watch", duration=0.3), lines, never)
+    assert not res.ok
+    assert res.detail == "probe command exited"
+
+
+def test_a_lost_probe_reads_the_sources_own_text_while_settling() -> None:
+    lines = FakeProbeLines("count=3")
+
+    def lose_once_backlog_is_consumed() -> None:
+        lines.lost = not lines.queue
+
+    lines.on_get = lose_once_backlog_is_consumed
+    step = Step(say="watch", expect=("count=3",), reject="count=4", settle=0.5, timeout=1)
+    res = run_step(step, lines, never)
+    assert not res.ok
+    assert res.detail == "probe command exited while settling"
+
+
+def test_a_lost_probe_reads_the_sources_own_text_after_an_expect_timeout() -> None:
+    lines = FakeProbeLines()
+    lines.lost = True
+    res = run_step(Step(say="watch", expect=("count=3",), timeout=0.3), lines, never)
+    assert not res.ok
+    assert "timeout" in res.detail
+    assert "(probe command exited)" in res.detail
+    assert "serial" not in res.detail
+
+
+def test_duration_judges_queued_lines_before_reporting_a_lost_link() -> None:
+    lines = FakeLines("ok", "ERROR")
+    lines.lost = True
+    step = Step(say="probe", duration=0.3, reject="ERROR", reset=True)
+    res = run_step(step, lines, never)
+    assert not res.ok
+    assert res.detail == "rejected line: 'ERROR'"

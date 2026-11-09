@@ -2,7 +2,7 @@
 
 Release process for `rustyfarian-bench`.
 
-> **Status:** Last exercised for `v0.3.0` (tagged 2026-11-07).
+> **Status:** Last exercised for `v0.4.0` (tagged 2026-11-09).
 > Update this note only after the tag is pushed.
 > All git write actions (commit, push, tag) are run by the maintainer, never by an agent.
 

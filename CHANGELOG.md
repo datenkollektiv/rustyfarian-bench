@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `probe = ["cmd", ...]` on an `expect` or `duration` step judges a host command's stdout instead of the serial lines, so a broker check no longer needs a `confirm`.
+  The command runs in the consumer directory in its own process group, is ended with SIGTERM and then SIGKILL, and may use `{port}`, `{example}`, `{board}`, `{chip}` and earlier captures.
+  Probe steps are unattended, and a command that exits early reads as a lost link; POSIX only.
+
 ## [0.4.0] - 2026-11-09
 
 ### Fixed

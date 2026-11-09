@@ -48,6 +48,12 @@ pyserial does not promise glitch-free modem lines during open, and macOS asserts
 
 ---
 
+## Host Probes
+
+**`os.killpg(pgid, 0)` raises `PermissionError`, not `ProcessLookupError`, on macOS once a process group holds only zombies.**
+A probe's shell dies on SIGTERM while its unreaped child is still a group member, so the existence check hits EPERM and the teardown crashed with `Operation not permitted`; Linux answers ESRCH only after every member is reaped.
+Fix: treat `PermissionError` like `ProcessLookupError` in every `killpg` call of `ProbeLines._end_group` and `_group_gone`, and always signal the group even when the leader has already exited, since children keep the pgid alive.
+
 ## Regex Patterns
 
 **Finding `(?P=name)` by text search misreads regex syntax: inside `[...]`, after `\`, or in a verbose comment it is literal text.**

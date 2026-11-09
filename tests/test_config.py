@@ -501,3 +501,122 @@ def test_scoped_verbose_flags_decide_what_is_a_comment(pattern: str, refs: set[s
     from rustyfarian_bench.config import references
 
     assert references(pattern) == refs
+
+
+PROBE = 'probe = ["just", "mqtt-watch", "{example}"]'
+
+
+def test_probe_fields_are_the_reserved_placeholders() -> None:
+    from rustyfarian_bench.config import PROBE_FIELDS
+
+    expected = frozenset({"port", "example", "board", "chip"})
+    assert expected == PROBE_FIELDS
+
+
+def test_placeholders_lists_the_names_a_command_uses() -> None:
+    from rustyfarian_bench.config import placeholders
+
+    assert placeholders(("just", "{example}", "{port}:{port}", "plain")) == {"example", "port"}
+    assert placeholders(("echo", "{{literal}}")) == set()
+    assert placeholders(()) == set()
+
+
+def test_probe_parses_with_expect(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario(PROBE, 'expect = "online"'))
+    (step,) = cfg.scenarios[0].steps
+    assert step.probe == ("just", "mqtt-watch", "{example}")
+    assert step.expect == ("online",)
+
+
+def test_probe_parses_with_duration(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario(PROBE, "duration = 5", 'reject = "refused"'))
+    (step,) = cfg.scenarios[0].steps
+    assert step.probe == ("just", "mqtt-watch", "{example}")
+    assert step.duration == 5.0
+
+
+def test_a_step_without_probe_has_an_empty_one() -> None:
+    assert Step(say="s", expect=("a",)).probe == ()
+
+
+def test_a_probe_step_needs_no_person() -> None:
+    assert not Step(say="s", probe=("true",), expect=("a",)).needs_person
+
+
+def test_a_probe_alone_is_not_a_step_kind(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="exactly one"):
+        load_scenario(tmp_path, scenario(PROBE))
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("[]", "must not be empty"),
+        ('[1, "x"]', "expected a string or a list of strings"),
+        ('["just", "{nope}"]', "unknown placeholder {nope}"),
+        ('["just", "{unclosed"]', "bad placeholder"),
+    ],
+    ids=["empty", "non-string", "unknown-placeholder", "bad-brace"],
+)
+def test_a_malformed_probe_is_a_config_error(tmp_path: Path, value: str, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_scenario(tmp_path, scenario(f"probe = {value}", 'expect = "a"'))
+
+
+@pytest.mark.parametrize(
+    ("other", "word"),
+    [
+        ('confirm = "ok?"', "confirm"),
+        ("attended = true", "attended"),
+        ("reset = true", "reset"),
+    ],
+)
+def test_a_probe_step_cannot_also_need_a_person_or_reset(
+    tmp_path: Path, other: str, word: str
+) -> None:
+    lines = [PROBE, other] if word == "confirm" else [PROBE, 'expect = "a"', other]
+    with pytest.raises(ConfigError, match=word):
+        load_scenario(tmp_path, scenario(*lines))
+
+
+@pytest.mark.parametrize("name", ["port", "example", "board", "chip"])
+def test_probe_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
+    cfg = load_scenario(tmp_path, scenario(f'probe = ["watch", "{{{name}}}"]', 'expect = "a"'))
+    assert cfg.scenarios[0].steps[0].probe == ("watch", f"{{{name}}}")
+
+
+CAPTURING = """examples = ["x"]
+[[step]]
+say = "learn the id"
+expect = 'client (?P<cid>\\w+)'
+[[step]]
+say = "watch the broker"
+probe = ["watch", "{cid}"]
+expect = "online"
+"""
+
+
+def test_probe_accepts_a_name_an_earlier_step_captured(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, CAPTURING)
+    assert cfg.scenarios[0].steps[1].probe == ("watch", "{cid}")
+
+
+def test_probe_rejects_a_name_only_a_later_step_captures(tmp_path: Path) -> None:
+    text = (
+        'examples = ["x"]\n[[step]]\nsay = "watch"\nprobe = ["watch", "{cid}"]\nexpect = "a"\n'
+        "[[step]]\nsay = \"learn\"\nexpect = 'client (?P<cid>\\w+)'\n"
+    )
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_probe_rejects_a_name_its_own_step_captures(tmp_path: Path) -> None:
+    text = scenario('probe = ["watch", "{cid}"]', "expect = 'client (?P<cid>\\w+)'")
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_a_capture_named_like_a_reserved_field_still_loads(tmp_path: Path) -> None:
+    text = CAPTURING.replace("(?P<cid>", "(?P<port>").replace("{cid}", "{port}")
+    cfg = load_scenario(tmp_path, text)
+    assert cfg.scenarios[0].steps[1].probe == ("watch", "{port}")

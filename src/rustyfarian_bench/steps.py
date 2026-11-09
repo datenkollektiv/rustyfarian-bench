@@ -53,6 +53,10 @@ def _watch(
             if line is not None and reject is not None and reject.search(line):
                 return "reject", line
             if lines.link_lost_since(t0):
+                # Lines queued before the loss happened first: judge them before giving up.
+                while (line := lines.get(0)) is not None:
+                    if reject is not None and reject.search(line):
+                        return "reject", line
                 return "lost", ""
             if stop is not None and stop():
                 elapsed = f"{time.monotonic() - t0:.0f}"
@@ -105,8 +109,7 @@ def run_step(
             kind, seen = bad
             return result(
                 False,
-                ("serial connection lost" if kind == "lost" else f"rejected line: {seen!r}")
-                + suffix,
+                (lines.lost_text if kind == "lost" else f"rejected line: {seen!r}") + suffix,
             )
         if step.reject is None:
             return result(True, f"watched for {seconds:g} s{suffix}")
@@ -124,7 +127,7 @@ def run_step(
             if left <= 0:
                 detail = f"timeout after {step.timeout:g} s waiting for {step.expect[index]!r}"
                 if lines.link_lost_since(started):
-                    detail += " (serial connection lost)"
+                    detail += f" ({lines.lost_text})"
                 return result(False, detail)
             ui.progress(left, step.timeout, f"waiting for {step.expect[index]!r}")
             line = lines.get(min(left, 0.2))
@@ -146,7 +149,7 @@ def run_step(
         if bad is not None:
             kind, seen = bad
             if kind == "lost":
-                return result(False, "serial connection lost while settling")
+                return result(False, f"{lines.lost_text} while settling")
             return result(False, f"rejected line while settling: {seen!r}")
     detail = "matched " + " → ".join(step.expect)
     if captured:
