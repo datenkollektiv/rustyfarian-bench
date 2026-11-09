@@ -546,6 +546,9 @@ class Session:
             guard: GuardedLines | None = None
             source: LineSource = serial
             if step.probe:
+                if step.serial_reject:
+                    # a panic the probe triggers must be judged, so clear the backlog first
+                    serial.drain()
                 argv = [part.format(**subst) for part in step.probe]
                 ui.info("$ " + " ".join(argv))
                 probe_log = log.with_name(f"{log.stem}.probe{n}{log.suffix}")

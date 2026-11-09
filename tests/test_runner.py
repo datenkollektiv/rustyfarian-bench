@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1860,6 +1860,28 @@ def test_serial_reject_does_not_judge_lines_from_before_the_step(
 
     assert result.verdict == "pass"
     assert serial.drained == 1
+
+
+def test_serial_reject_sees_a_line_the_board_prints_while_the_probe_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serial = FakeLines()
+    inner = FakeProbes(FakeProbeLines("online"))
+
+    def open_probe(argv: Sequence[str], cwd: Path, log_path: Path) -> FakeProbeLines:
+        serial.queue.append("PANIC: right at startup")  # the probe's action triggers it at once
+        return inner(argv, cwd, log_path)
+
+    step = replace(_watch(), serial_reject="PANIC", timeout=2.0)
+    session, scenario, _, _ = _probed(
+        tmp_path, monkeypatch, (step,), serial=serial, probes=cast("FakeProbes", open_probe)
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "fail"
+    assert result.steps[0].detail.startswith("rejected serial line: ")
+    assert "PANIC: right at startup" in result.steps[0].detail
 
 
 def test_serial_reject_still_warns_about_a_lost_serial_link(

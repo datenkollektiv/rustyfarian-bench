@@ -394,13 +394,15 @@ def test_a_duration_step_with_run_keeps_the_backlog() -> None:
 PANIC = re.compile("PANIC|panicked")
 
 
-def test_guarded_lines_drain_the_serial_backlog_at_construction() -> None:
-    from rustyfarian_bench.steps import GuardedLines
+def test_guarded_lines_leave_the_serial_backlog_to_the_caller_to_drain() -> None:
+    from rustyfarian_bench.steps import GuardedLines, SerialRejected
 
-    serial = FakeLines("PANIC from before the step")
-    GuardedLines(FakeProbeLines("online"), serial, PANIC)
-    assert serial.drained == 1
-    assert list(serial.queue) == []
+    serial = FakeLines("PANIC from the probe's first moments")
+    guarded = GuardedLines(FakeProbeLines("online"), serial, PANIC)
+    assert serial.drained == 0
+    assert list(serial.queue) == ["PANIC from the probe's first moments"]
+    with pytest.raises(SerialRejected):
+        guarded.check()
 
 
 def test_guarded_lines_pass_the_probe_lines_through() -> None:

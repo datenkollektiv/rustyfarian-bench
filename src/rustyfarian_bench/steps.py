@@ -47,8 +47,8 @@ class GuardedLines:
     """A probe step's lines, with the serial lines judged against `pattern` meanwhile.
 
     Every `get` first looks at the serial lines that arrived since, so a match surfaces
-    within one poll of whatever loop is reading. Serial lines from before the step are
-    dropped at construction: they are not this step's to judge.
+    within one poll of whatever loop is reading. The caller drains before the probe starts,
+    so only lines from then on are judged.
     """
 
     def __init__(self, source: LineSource, serial: LineSource, pattern: re.Pattern[str]):
@@ -56,7 +56,6 @@ class GuardedLines:
         self._serial = serial
         self._pattern = pattern
         self.lost_text = source.lost_text
-        serial.drain()
 
     def check(self) -> None:
         """Raise `SerialRejected` for the first queued serial line that matches."""
