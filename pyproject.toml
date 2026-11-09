@@ -1,6 +1,6 @@
 [project]
 name = "rustyfarian-bench"
-version = "0.3.0"
+version = "0.4.0"
 description = "Guided, rerunnable hardware bench tests for the rustyfarian ESP32 crates"
 readme = "README.md"
 license = "MIT OR Apache-2.0"

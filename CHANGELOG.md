@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
 ### Fixed
 
 - Opening or reopening the port no longer reboots a USB Serial/JTAG chip: the reader clears RTS before DTR, so a woken deep-sleep board keeps its retained state and each log starts with one boot instead of two.
@@ -13,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A board with `detect = false` is found by its USB identity, `usb_id = "vid:pid"` (plus `usb_serial` to tell two identical bridges apart), so it needs no `--port`; several matching ports stop the run and ask which one.
 - A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text; a later step refers to it as `(?P=pole)`, so a check can start on either side and then ask for the other one.
   Captures are recorded per step, and a reference with no earlier capturing step is a config error at load time.
 - `reset = true` on a step resets the board once the step starts (after Enter when armed), for a check the firmware runs at boot, such as a calibration window; a retry resets again.
