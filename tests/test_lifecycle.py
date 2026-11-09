@@ -570,6 +570,31 @@ def test_run_executes_after_arming_and_reset_and_before_judging(
     assert _between(rig.timeline, "ready", "serial-close") == ["ready", "reset", "run-x", "judge"]
 
 
+def test_a_run_duration_step_ignores_serial_lines_queued_before_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = Step(say="act", run=("run-x",), duration=0.1, reject="PANIC", arm=False, timeout=0.3)
+    rig = _hooked(tmp_path, monkeypatch, steps=(step,), serial_lines=("PANIC",), judging="real")
+
+    result = rig.run()
+
+    assert result.verdict == "pass"
+
+
+def test_a_run_duration_step_rejects_a_serial_line_produced_during_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = Step(say="act", run=("run-x",), duration=0.1, reject="PANIC", arm=False, timeout=0.3)
+    commands = FakeCommands()
+    rig = _hooked(tmp_path, monkeypatch, steps=(step,), commands=commands, judging="real")
+    commands.outcomes.append(Outcome(effect=lambda: rig.serial.queue.append("PANIC")))
+
+    result = rig.run()
+
+    assert result.verdict == "fail"
+    assert "PANIC" in result.steps[0].detail
+
+
 def test_with_a_probe_the_probe_starts_before_run_and_both_before_judging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

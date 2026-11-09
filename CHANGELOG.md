@@ -27,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A literal brace in `say` or `confirm` now needs doubling (`{{`, `}}`); a stray brace or an unknown name is a config error at load time.
 - `results.jsonl` gains `steps[].lacked`, always present, a list of the prompt values that were missing.
 
+### Fixed
+
+- A `run` step with `duration` no longer judges serial lines left over from earlier steps; the queue is cleared right before the command runs, and the board's reaction to it is still judged.
+
 ## [0.4.0] - 2026-11-09
 
 ### Fixed

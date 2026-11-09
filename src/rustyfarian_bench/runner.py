@@ -558,6 +558,9 @@ class Session:
                     guard = GuardedLines(probe, serial, re.compile(step.serial_reject))
                     source = guard
             if step.run:
+                if step.duration is not None and not step.reset and not step.probe:
+                    # judge the board's reaction to the action, not what earlier steps left behind
+                    serial.drain()
                 run_log = log.with_name(f"{log.stem}.run{n}{log.suffix}")
                 record = self._host(
                     [part.format(**subst) for part in step.run], run_log, step.run_timeout
