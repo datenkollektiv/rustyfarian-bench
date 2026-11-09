@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import ui
+from .commands import CommandRecord
 from .config import Step
 from .serial_lines import LineSource
 
@@ -22,6 +23,7 @@ class StepResult:
     note: str = ""  # what the operator saw, asked for when the step finally fails
     captured: dict[str, str] = field(default_factory=dict)  # named groups its expect matched
     evidence: tuple[str, ...] = ()  # the line each `expect` pattern matched, in order
+    run: CommandRecord | None = None  # the host command the step ran before judging
 
     @property
     def counts_as_pass(self) -> bool:
@@ -30,6 +32,46 @@ class StepResult:
     @property
     def failed(self) -> bool:
         return not (self.ok or self.optional or self.unverified)
+
+
+class SerialRejected(Exception):
+    """A serial line matched a probe step's `serial_reject` pattern."""
+
+    def __init__(self, line: str):
+        super().__init__(line)
+        self.line = line
+
+
+class GuardedLines:
+    """A probe step's lines, with the serial lines judged against `pattern` meanwhile.
+
+    Every `get` first looks at the serial lines that arrived since, so a match surfaces
+    within one poll of whatever loop is reading. Serial lines from before the step are
+    dropped at construction: they are not this step's to judge.
+    """
+
+    def __init__(self, source: LineSource, serial: LineSource, pattern: re.Pattern[str]):
+        self._source = source
+        self._serial = serial
+        self._pattern = pattern
+        self.lost_text = source.lost_text
+        serial.drain()
+
+    def check(self) -> None:
+        """Raise `SerialRejected` for the first queued serial line that matches."""
+        while (line := self._serial.get(0)) is not None:
+            if self._pattern.search(line):
+                raise SerialRejected(line)
+
+    def get(self, timeout: float) -> str | None:
+        self.check()
+        return self._source.get(timeout)
+
+    def drain(self) -> None:
+        self._source.drain()
+
+    def link_lost_since(self, t0: float) -> bool:
+        return self._source.link_lost_since(t0)
 
 
 def _watch(
@@ -97,7 +139,7 @@ def run_step(
     if step.duration is not None:
         # Watch-only steps judge what happens from now on, not the backlog; a reset step's
         # backlog is already the new boot (the reset dropped the old one).
-        if not step.reset:
+        if not (step.reset or step.run):
             lines.drain()
         seconds = step.duration if duration is None else duration
         # An operator-chosen length is recorded next to the scenario's, so results stay comparable.

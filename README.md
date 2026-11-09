@@ -162,11 +162,23 @@ The command's own log is `<example>-<stamp>.probe<N>.log` beside the serial log.
 A command that exits before the step ends counts as a lost link, so `settle` and `duration` need a watcher that keeps running.
 When a step fails, the detail adds `probe exited N` and the last stderr lines.
 The tool must flush each line: `python -u`, `stdbuf -oL`.
-Probe steps need no person: `--unattended` runs them and `--attended` skips them.
+Probe steps need no person unless `attended`: `--unattended` runs them and `--attended` skips them.
 Serial lines are not judged during a probe step; a lost serial link is only warned about afterwards.
 A retry starts the command again, so a probe must be a passive watcher.
 A command that cannot start is an `error` result and ends the session, like a missing build tool.
 Probes are POSIX only (macOS and Linux).
+`serial_reject = 'PANIC|panicked'` (only with `probe`) judges the serial lines while the probe runs.
+A match fails the step with `rejected serial line: '<line>'`, even after the probe matched.
+Serial lines from before the step are drained first, and a match is seen within 0.2 s.
+Without `serial_reject`, serial stays unjudged as above.
+Its `(?P=name)` references are checked like `reject`.
+`attended = true` is allowed on a probe step: `--attended` runs it, `--unattended` skips it.
+That keeps a probe next to the attended action it observes, such as an unplug.
+On an attended probe with `duration`, Enter ends the wait early.
+A probe that subscribes to a broker sees the retained replay at subscribe time.
+Make the pattern require a live message, e.g. match `retain=0`.
+A probe and a `run` in the same step have no readiness handshake.
+A non-retained message published before the subscriber is up can be missed.
 
 ```toml
 [[step]]
@@ -177,13 +189,67 @@ reject = 'Connection refused'
 timeout = 60
 ```
 
+### Setup, teardown and run
+
+A scenario can start and restore its host side, and a step can act on the host before it is judged.
+
+```toml
+examples = ["hal_c6_mqtt_lwt"]
+setup = [["just", "mosquitto", "up"], ["just", "mqtt-pub", "bench-ping", "1"]]   # prove the broker accepts a connection; a retained-status read fails on a fresh broker
+teardown = [["just", "mosquitto", "up"]]
+hook_timeout = 60                    # per setup/teardown command, default 60
+
+[[step]]
+say = "T2: an inbound message reaches the firmware"
+run = ["just", "mqtt-pub", "cmd", "hello"]
+run_timeout = 10                     # default 30
+expect = '\[app\] rx topic=\S+/cmd payload=hello retained=false'
+```
+
+The order per example is setup, build, detect, flash, steps, teardown.
+Hooks run once per example.
+An example the mode skips entirely runs no hooks.
+A setup command that exits non-zero, times out or cannot start is an `error` with `setup failed: <summary>`.
+Nothing is built or flashed then, and the rest of setup is skipped.
+The session goes on with the next example.
+Teardown always runs: after pass, fail, error, a failed setup and Ctrl-C.
+A second Ctrl-C skips the rest of teardown and stops the session.
+A failing teardown command is a warning; the verdict does not change.
+`setup` may use `{example}` and `{board}`.
+`teardown` may also use `{port}` and `{chip}`.
+If detection never happened, a teardown command that needs `{port}` or `{chip}` is skipped and recorded as `not run: {port} unknown`.
+`run` is an argv list on an `expect` or `duration` step, never on `confirm`.
+It may use `{port}`, `{example}`, `{board}`, `{chip}` and earlier captures.
+Per attempt the order is: arm prompt, reset, probe starts, `run`, judging.
+With a `probe`, the probe starts first so it can see what `run` causes.
+A `run` plus `duration` step does not drain serial, so the board's reaction is judged.
+A failing `run` fails the step with `run failed: <summary>` before judging.
+A retry runs it again, and the evidence is the last attempt's.
+`run_timeout` defaults to 30 s and needs `run`.
+`hook_timeout` defaults to 60 s.
+A `run` step needs no person unless it is `attended` or has `confirm`.
+The `run` output is not captured for matching; use a `probe` for that.
+A command that exits normally does not end its process group, so a daemon that `setup` starts survives.
+A timeout and Ctrl-C end the group with SIGTERM, then SIGKILL after 2 s.
+Each command is run in the consumer directory, without a shell, and POSIX only.
+
+Each command is recorded as `argv`, `exit_code`, `duration`, `timed_out`, `error`, `stdout_tail`, `stderr_tail` and `log`.
+The tails keep the last 5 lines, each cut to 200 characters.
+The full output is in `<example>-<stamp>.setup<N>.log`, `.run<n>.log` and `.teardown<N>.log` beside the serial log.
+`results.jsonl` gains `setup`, `teardown` (lists) and `steps[].run`; they are always present, and the old keys are unchanged.
+
 The definition is checked strictly when it loads, before anything is built:
 - Booleans and numbers must be real TOML values, so `optional = "false"` is an error rather than true.
 - `timeout` and `duration` must be greater than 0, and `settle` must be 0 or more.
 - Regexes must compile, and a `(?P=name)` reference needs an earlier step that captures `name`.
 - Commands may use only `{example}`, plus `{port}` in `flash`.
 - A `probe` must be a non-empty list of strings, and may use only `{port}`, `{example}`, `{board}`, `{chip}` and names an earlier step captures; the reserved names win over a capture of the same name.
-- A `probe` needs `expect` or `duration`, and cannot be combined with `confirm`, `attended` or `reset`.
+- A `probe` needs `expect` or `duration`, and cannot be combined with `confirm` or `reset`; `attended` is allowed.
+- `serial_reject` needs `probe` and must compile.
+- `run` must be a non-empty list of strings, needs `expect` or `duration`, and cannot be combined with `confirm`.
+- `run_timeout` must be greater than 0 and needs `run`.
+- `setup` and `teardown` must be lists of argv lists; `setup` may use only `{example}` and `{board}`, `teardown` also `{port}` and `{chip}`.
+- `hook_timeout` must be greater than 0.
 - A probe placeholder whose capture is missing at run time fails the step at once, before the command starts.
 - `examples` must not be empty, and the names must not contain `/` or `..`.
 - A board's `checks` must not list a name twice.

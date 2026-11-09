@@ -32,6 +32,34 @@ STDERR_TAIL = 5
 REAP_WAIT = 0.5
 
 
+def end_group(proc: subprocess.Popen[bytes], grace: float = TERM_GRACE) -> None:
+    """SIGTERM the process group, give it `grace` to vanish, then SIGKILL what is left."""
+    # Signal even when the leader is already gone: children it left behind keep the group
+    # (and so the pgid) alive, and an empty group answers ProcessLookupError.
+    pgid = proc.pid  # start_new_session made the command its group's leader
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+        deadline = time.monotonic() + grace
+        while not group_gone(proc, pgid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not group_gone(proc, pgid):
+            os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    # A leader stuck in the kernel must not hang the run.
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=JOIN_WAIT)
+
+
+def group_gone(proc: subprocess.Popen[bytes], pgid: int) -> bool:
+    proc.poll()  # reap the leader: a zombie still counts as a group member
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):  # macOS: EPERM once only zombies remain
+        return True
+    return False
+
+
 class ProbeLines:
     lost_text = "probe command exited"
 
@@ -89,7 +117,7 @@ class ProbeLines:
         try:
             proc = self._proc
             if proc is not None:
-                self._end_group(proc)
+                end_group(proc, self._grace)
                 for t in self._threads:
                     t.join(timeout=JOIN_WAIT)
                 for pipe, t in zip((proc.stdout, proc.stderr), self._threads, strict=True):
@@ -98,33 +126,6 @@ class ProbeLines:
         finally:
             with self._log_lock:
                 self._log.close()
-
-    def _end_group(self, proc: subprocess.Popen[bytes]) -> None:
-        """SIGTERM the process group, give it `grace` to vanish, then SIGKILL what is left."""
-        # Signal even when the leader is already gone: children it left behind keep the group
-        # (and so the pgid) alive, and an empty group answers ProcessLookupError.
-        pgid = proc.pid  # start_new_session made the command its group's leader
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-            deadline = time.monotonic() + self._grace
-            while not self._group_gone(proc, pgid) and time.monotonic() < deadline:
-                time.sleep(0.02)
-            if not self._group_gone(proc, pgid):
-                os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        # A leader stuck in the kernel must not hang the run.
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=JOIN_WAIT)
-
-    @staticmethod
-    def _group_gone(proc: subprocess.Popen[bytes], pgid: int) -> bool:
-        proc.poll()  # reap the leader: a zombie still counts as a group member
-        try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, PermissionError):  # macOS: EPERM once only zombies remain
-            return True
-        return False
 
     def get(self, timeout: float) -> str | None:
         try:

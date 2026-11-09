@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -15,7 +16,7 @@ from rustyfarian_bench.config import BenchConfig, Board, Scenario, Step
 from rustyfarian_bench.device import Device
 from rustyfarian_bench.steps import StepResult
 
-from .fakes import FakeLines, FakeProbeLines, FakeProbes
+from .fakes import FakeLines, FakeProbeLines, FakeProbes, Timeline
 
 if TYPE_CHECKING:  # only named in a cast: the other tests need not import the probe module
     from rustyfarian_bench.probe_lines import ProbeLines
@@ -1306,12 +1307,15 @@ def _watch() -> Step:
 class CountingLines(FakeLines):
     """Serial lines that count the resets asked of them."""
 
-    def __init__(self, *lines: str) -> None:
+    def __init__(self, *lines: str, timeline: Timeline | None = None) -> None:
         super().__init__(*lines)
         self.resets = 0
+        self.timeline = timeline  # gets "reset" for every reset asked for
 
     def reset(self, timeout: float = 5.0) -> bool:
         self.resets += 1
+        if self.timeline is not None:
+            self.timeline.append("reset")
         return True
 
 
@@ -1656,3 +1660,252 @@ def test_a_steady_serial_link_during_a_probe_says_nothing(
     session.run_example(scenario, "ex")
 
     assert warnings == []
+
+
+# Attended probes: a probe step that needs a person (an unplug) while its command observes.
+
+
+def _unplug(*, expect: tuple[str, ...] = ("online",), duration: float | None = None) -> Step:
+    return replace(
+        _watch(), say="unplug the board", attended=True, expect=expect, duration=duration
+    )
+
+
+def test_steps_for_puts_an_attended_probe_in_the_attended_half(tmp_path: Path) -> None:
+    board = Board("s3", "esp32s3", "S3")
+    boot = Step(say="boot", expect=("a",))
+    steps = (boot, _unplug(), _watch())
+    sc = Scenario("chk", board, ("ex",), steps, tmp_path / "chk.toml")
+
+    assert runner.steps_for(sc, "attended") == (steps[1],)
+    assert runner.steps_for(sc, "unattended") == (boot, steps[2])
+    assert runner.steps_for(sc, None) == steps
+
+
+def test_unattended_mode_skips_an_attended_probe_and_spawns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = (_unplug(), Step(say="boot", expect=("a",), timeout=0.3, arm=False))
+    session, scenario, _, probes = _probed(
+        tmp_path, monkeypatch, steps, serial=FakeLines("a"), mode="unattended"
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert probes.calls == []
+    assert [s.say for s in result.steps] == ["boot"]
+    assert result.verdict == "pass"
+
+
+def test_a_scenario_with_only_an_attended_probe_is_dropped_when_unattended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, (_unplug(),), mode="unattended")
+    monkeypatch.setattr(ui, "warn", lambda msg: None)
+
+    outcome = session.run((scenario,), None)
+
+    assert outcome == "fail"
+    assert probes.calls == []
+    assert session.results == []
+
+
+@pytest.mark.parametrize("yes", [True, False])
+def test_attended_mode_spawns_an_attended_probe_and_passes_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, yes: bool
+) -> None:
+    stops: list[object] = []
+
+    def fake_run_step(
+        step: Step, lines: object, ask: object, duration: float | None = None, stop: object = None
+    ) -> StepResult:
+        stops.append(stop)
+        return StepResult(step.say, True, "ok")
+
+    monkeypatch.setattr(ui, "ready_duration", lambda msg, seconds: seconds)
+    monkeypatch.setattr(ui, "ask", lambda q, default=True: True)
+    step = _unplug(expect=(), duration=0.2)
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, (step,), mode="attended", yes=yes)
+    monkeypatch.setattr(runner, "run_step", fake_run_step)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert len(probes.calls) == 1
+    assert len(stops) == 1
+    assert (stops[0] is None) == yes  # --yes asks nobody, so nobody can press Enter
+
+
+def test_enter_ends_an_attended_probe_duration_early(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ui, "ready_duration", lambda msg, seconds: seconds)
+    monkeypatch.setattr(ui, "enter_pressed", lambda: True)
+    step = _unplug(expect=(), duration=5.0)
+    session, scenario, _, probes = _probed(
+        tmp_path, monkeypatch, (step,), mode="attended", yes=False
+    )
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert "ended by operator" in result.steps[0].detail
+    assert [p.exited for p in probes.opened] == [1]
+
+
+# serial_reject: the board's own output is judged while a probe step runs.
+
+
+def _emit(serial: FakeLines, line: str, after: int = 0) -> None:
+    """Have the serial side produce `line` once, after `after` reads, as the board would
+    mid-step (lines that exist before the step are drained, so they cannot be used)."""
+    reads: list[int] = []
+
+    def on_get() -> None:
+        reads.append(1)
+        if len(reads) == after + 1:
+            serial.queue.append(line)
+
+    serial.on_get = on_get
+
+
+def test_serial_reject_match_during_a_probe_fails_the_step_with_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serial = FakeLines()
+    _emit(serial, "PANIC: x")
+    step = replace(_watch(), serial_reject="PANIC", timeout=5.0)
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, (step,), serial=serial)
+
+    t0 = time.monotonic()
+    result = session.run_example(scenario, "ex")
+
+    detail = result.steps[0].detail
+    assert result.verdict == "fail"
+    assert detail.startswith("rejected serial line: ")
+    assert "PANIC: x" in detail
+    assert "timeout" not in detail
+    assert time.monotonic() - t0 < 3.0  # judged while the probe ran, not at its timeout
+    assert [p.exited for p in probes.opened] == [1]
+
+
+def test_serial_reject_with_no_match_leaves_the_probe_verdict_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serial = FakeLines()
+    _emit(serial, "boot ok")
+    step = replace(_watch(), serial_reject="PANIC")
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,), serial=serial, probes=probes)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert result.steps[0].detail == "matched online"
+
+
+@pytest.mark.parametrize(("emitted", "verdict"), [(None, "pass"), ("PANIC: x", "fail")])
+def test_serial_reject_on_a_probe_duration_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, emitted: str | None, verdict: str
+) -> None:
+    serial = FakeLines()
+    if emitted is not None:
+        _emit(serial, emitted)
+    step = Step(say="quiet", probe=("watch",), duration=0.2, serial_reject="PANIC")
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,), serial=serial)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == verdict
+    if emitted is not None:
+        assert result.steps[0].detail.startswith("rejected serial line: ")
+
+
+@pytest.mark.parametrize("after", [0, 1], ids=["same-poll-as-the-match", "while-settling"])
+def test_serial_reject_wins_even_when_the_probe_already_matched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after: int
+) -> None:
+    serial = FakeLines()
+    _emit(serial, "PANIC: late", after=after)
+    step = replace(_watch(), serial_reject="PANIC", settle=0.3)
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,), serial=serial, probes=probes)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "fail"
+    assert result.steps[0].detail.startswith("rejected serial line: ")
+    assert "PANIC: late" in result.steps[0].detail
+
+
+def test_serial_reject_does_not_judge_lines_from_before_the_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serial = FakeLines("PANIC: from an earlier step")
+    step = replace(_watch(), serial_reject="PANIC")
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,), serial=serial, probes=probes)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert serial.drained == 1
+
+
+def test_serial_reject_still_warns_about_a_lost_serial_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(ui, "warn", warnings.append)
+    serial = FakeLines()
+    serial.lost = True
+    step = replace(_watch(), serial_reject="PANIC")
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, _ = _probed(tmp_path, monkeypatch, (step,), serial=serial, probes=probes)
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "pass"
+    assert any("serial" in w.lower() for w in warnings)
+
+
+def _pole_steps(settle: float = 0.0) -> tuple[Step, Step]:
+    learn = Step(say="learn", expect=("pole (?P<pole>SOUTH|NORTH)",), arm=False, timeout=0.3)
+    watch = replace(_watch(), serial_reject="PANIC (?P=pole)", settle=settle)
+    return learn, watch
+
+
+@pytest.mark.parametrize(("emitted", "verdict"), [("PANIC NORTH", "pass"), ("PANIC SOUTH", "fail")])
+def test_serial_reject_takes_an_earlier_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, emitted: str, verdict: str
+) -> None:
+    serial = FakeLines("pole SOUTH")
+    probes = FakeProbes(FakeProbeLines("online"))
+    session, scenario, _, _ = _probed(
+        tmp_path, monkeypatch, _pole_steps(settle=0.3), serial=serial, probes=probes
+    )
+    reads: list[int] = []
+
+    def late() -> None:  # the board speaks only once the probe step is running
+        reads.append(1)
+        if len(reads) == 2:
+            serial.queue.append(emitted)
+
+    serial.on_get = late
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == verdict
+
+
+def test_serial_reject_with_nothing_captured_fails_without_spawning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, watch = _pole_steps()
+    session, scenario, _, probes = _probed(tmp_path, monkeypatch, (watch,))
+
+    result = session.run_example(scenario, "ex")
+
+    assert result.verdict == "fail"
+    assert result.steps[0].detail.startswith("nothing captured for (?P=pole)")
+    assert probes.calls == []

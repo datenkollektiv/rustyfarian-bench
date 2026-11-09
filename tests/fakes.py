@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import TracebackType
-from typing import IO
+from types import ModuleType, TracebackType
+from typing import IO, TYPE_CHECKING
 
 import pytest
 
+from rustyfarian_bench import probe_lines
+
+if TYPE_CHECKING:  # the module is new: tests that never run a command need not import it
+    from rustyfarian_bench.commands import CommandRecord
+
 _real_sleep = time.sleep
+
+# Event names in the order they happened; shared by the fakes of one test.
+Timeline = list[str]
 
 
 # One item per read(): bytes are returned, an exception is raised, a callable is a side
@@ -111,14 +120,22 @@ class FakeProbes:
     A call with no scripted probe left gets an empty one. `error` makes every probe fail to start.
     """
 
-    def __init__(self, *probes: FakeProbeLines, error: OSError | None = None):
+    def __init__(
+        self,
+        *probes: FakeProbeLines,
+        error: OSError | None = None,
+        timeline: Timeline | None = None,
+    ):
         self.scripted = deque(probes)
         self.error = error
+        self.timeline = timeline  # gets "probe-open" for every call
         self.calls: list[ProbeCall] = []
         self.opened: list[FakeProbeLines] = []
 
     def __call__(self, argv: Sequence[str], cwd: Path, log_path: Path) -> FakeProbeLines:
         self.calls.append(ProbeCall(list(argv), cwd, log_path))
+        if self.timeline is not None:
+            self.timeline.append("probe-open")
         probe = self.scripted.popleft() if self.scripted else FakeProbeLines()
         probe.error = self.error or probe.error
         self.opened.append(probe)
@@ -172,7 +189,11 @@ class FakeProcess:
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
-        assert wait_until(lambda: self.returncode is not None, timeout or 2.0), "never ended"
+        """Like Popen.wait: with a `timeout` a process that still runs raises TimeoutExpired."""
+        ended = wait_until(lambda: self.returncode is not None, 2.0 if timeout is None else timeout)
+        if not ended and timeout is not None:
+            raise subprocess.TimeoutExpired("fake", timeout)
+        assert ended, "never ended"
         assert self.returncode is not None
         return self.returncode
 
@@ -220,9 +241,10 @@ class FakeKillpg:
     """Records os.killpg calls on a FakeProcess's group and acts on them.
 
     Signal 0 probes the group (ProcessLookupError once it is gone); SIGTERM ends it unless the
-    process ignores it; SIGKILL always does. Installed over `probe_lines.os.killpg`, which is
-    the `os` module's own attribute: monkeypatch puts it back after the test. `os.getpgid` is
-    patched too, since a fake pid has no real group.
+    process ignores it; SIGKILL always does. Installed over `<module>.os.killpg` (by default
+    `probe_lines`, which owns the group teardown), which is the `os` module's own attribute:
+    monkeypatch puts it back after the test. `os.getpgid` is patched too, since a fake pid has
+    no real group.
     """
 
     def __init__(self, proc: FakeProcess):
@@ -241,9 +263,106 @@ class FakeKillpg:
         if sig == signal.SIGKILL or (sig == signal.SIGTERM and not self.proc.ignore_term):
             self.proc.die(-int(sig))
 
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("rustyfarian_bench.probe_lines.os.killpg", self)
-        monkeypatch.setattr("rustyfarian_bench.probe_lines.os.getpgid", lambda pid: pid)
+    def install(self, monkeypatch: pytest.MonkeyPatch, module: ModuleType = probe_lines) -> None:
+        monkeypatch.setattr(f"{module.__name__}.os.killpg", self)
+        monkeypatch.setattr(f"{module.__name__}.os.getpgid", lambda pid: pid)
+
+
+@dataclass
+class Outcome:
+    """What one scripted host command does: ends with `exit_code`, times out, cannot start
+    (`error`), runs `effect` while it "runs", or raises `raises` (a Ctrl-C)."""
+
+    exit_code: int | None = 0
+    stdout: tuple[str, ...] = ()
+    stderr: tuple[str, ...] = ()
+    timed_out: bool = False
+    error: str = ""
+    raises: BaseException | None = None
+    effect: Callable[[], None] | None = None
+    duration: float = 0.25
+
+
+def failing(code: int = 1, *stderr: str) -> Outcome:
+    return Outcome(exit_code=code, stderr=stderr)
+
+
+def timing_out() -> Outcome:
+    return Outcome(exit_code=None, timed_out=True, duration=30.0)
+
+
+def unstartable(text: str = "no such file") -> Outcome:
+    return Outcome(exit_code=None, error=text, duration=0.0)
+
+
+@dataclass(frozen=True)
+class CommandCall:
+    argv: list[str]
+    cwd: Path
+    log_path: Path
+    timeout: float
+
+
+class FakeCommands:
+    """The `run_command` a Session is given: records each call, returns scripted records.
+
+    The outcome of a call is `by_argv[argv[0]]` if given, else the next one of `outcomes` in
+    call order, else exit 0. `interrupt_on` (1-based) raises KeyboardInterrupt on that call,
+    as Ctrl-C would. Each call appends `argv[0]` to the shared `timeline`.
+    """
+
+    def __init__(
+        self,
+        *outcomes: Outcome,
+        by_argv: dict[str, Outcome] | None = None,
+        interrupt_on: int | None = None,
+        timeline: Timeline | None = None,
+    ):
+        self.outcomes = deque(outcomes)
+        self.by_argv = by_argv or {}
+        self.interrupt_on = interrupt_on
+        self.timeline = timeline
+        self.calls: list[CommandCall] = []
+
+    @property
+    def argvs(self) -> list[list[str]]:
+        return [c.argv for c in self.calls]
+
+    @property
+    def names(self) -> list[str]:
+        """The first word of each call, in call order."""
+        return [c.argv[0] for c in self.calls]
+
+    def __call__(
+        self, argv: Sequence[str], cwd: Path, log_path: Path, timeout: float
+    ) -> CommandRecord:
+        from rustyfarian_bench.commands import CommandRecord
+
+        self.calls.append(CommandCall(list(argv), cwd, log_path, timeout))
+        if self.timeline is not None:
+            self.timeline.append(argv[0])
+        if self.interrupt_on == len(self.calls):
+            raise KeyboardInterrupt
+        if argv[0] in self.by_argv:
+            out = self.by_argv[argv[0]]
+        elif self.outcomes:
+            out = self.outcomes.popleft()
+        else:
+            out = Outcome()
+        if out.raises is not None:
+            raise out.raises
+        if out.effect is not None:
+            out.effect()
+        return CommandRecord(
+            argv=tuple(argv),
+            exit_code=out.exit_code,
+            duration=out.duration,
+            timed_out=out.timed_out,
+            error=out.error,
+            stdout_tail=out.stdout,
+            stderr_tail=out.stderr,
+            log=str(log_path),
+        )
 
 
 class FakeSerial:

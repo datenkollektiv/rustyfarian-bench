@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import device, ui
+from .commands import CommandRecord, run_command
 from .config import (
     PROBE_FIELDS,
     BenchConfig,
@@ -26,8 +28,8 @@ from .config import (
     resolve,
 )
 from .probe_lines import ProbeLines
-from .serial_lines import SerialLines
-from .steps import StepResult, run_step
+from .serial_lines import LineSource, SerialLines
+from .steps import GuardedLines, SerialRejected, StepResult, run_step
 
 Mode = Literal["unattended", "attended"]
 
@@ -54,6 +56,8 @@ class ExampleResult:
     detail: str = ""
     steps: list[StepResult] = field(default_factory=list)
     mode: Mode | None = None
+    setup: list[CommandRecord] = field(default_factory=list)
+    teardown: list[CommandRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -93,10 +97,12 @@ class Session:
         opts: Options,
         *,
         open_probe: Callable[..., ProbeLines] = ProbeLines,
+        run_command: Callable[..., CommandRecord] = run_command,
     ):
         self.cfg = cfg
         self.opts = opts
         self.open_probe = open_probe  # (argv, cwd, log_path) -> a probe step's line source
+        self.run_command = run_command  # (argv, cwd, log_path, timeout) -> how it went
         self.device: device.Device | None = None
         self.results: list[ExampleResult] = []
         self.stopped = (
@@ -272,13 +278,102 @@ class Session:
         except Exception as e:  # any other failure must still leave a recorded row
             r.verdict, r.detail = "error", f"{type(e).__name__}: {e}"
             ui.warn(f"error: {r.detail}")
+        self._teardown(scenario, example, stamp, r)
         self._record(scenario, r)
         return r
+
+    def _log_path(self, scenario: Scenario, example: str, stamp: datetime) -> Path:
+        return self.cfg.board_dir(scenario.board) / "logs" / f"{example}-{stamp:%Y%m%d-%H%M%S}.log"
+
+    def _host(
+        self,
+        argv: list[str],
+        log: Path,
+        timeout: float,
+        into: list[CommandRecord] | None = None,
+    ) -> CommandRecord:
+        """Run a host command for its record; Ctrl-C leaves a stub record and propagates."""
+        ui.info("$ " + " ".join(argv))
+        shown = str(log.relative_to(self.opts.repo))
+        try:
+            rec = replace(self.run_command(argv, self.opts.repo, log, timeout), log=shown)
+        except KeyboardInterrupt:
+            if into is not None:
+                into.append(
+                    CommandRecord(tuple(argv), None, 0.0, error="interrupted by Ctrl-C", log=shown)
+                )
+            raise
+        if into is not None:
+            into.append(rec)
+        return rec
+
+    def _setup(self, scenario: Scenario, example: str, stamp: datetime, r: ExampleResult) -> bool:
+        """Run the scenario's setup commands; on the first failure the example is an error."""
+        log = self._log_path(scenario, example, stamp)
+        for i, command in enumerate(scenario.setup, 1):
+            argv = [part.format(example=example, board=scenario.board.key) for part in command]
+            rec = self._host(
+                argv,
+                log.with_name(f"{log.stem}.setup{i}{log.suffix}"),
+                scenario.hook_timeout,
+                r.setup,
+            )
+            if not rec.ok:
+                r.verdict, r.detail = "error", f"setup failed: {rec.summary()}"
+                return False
+        return True
+
+    def _teardown(
+        self, scenario: Scenario, example: str, stamp: datetime, r: ExampleResult
+    ) -> None:
+        """Run the scenario's teardown commands after any outcome; never raises.
+
+        A failing command is a warning and leaves the verdict alone. A command that needs the
+        port or chip of a board that was never detected is not run. Ctrl-C skips the rest.
+        """
+        log = self._log_path(scenario, example, stamp)
+        known = {"port": r.port, "chip": r.chip}
+        try:
+            for i, command in enumerate(scenario.teardown, 1):
+                path = log.with_name(f"{log.stem}.teardown{i}{log.suffix}")
+                shown = str(path.relative_to(self.opts.repo))
+                unknown = sorted(
+                    f for f in placeholders(command) if f in known and known[f] is None
+                )
+                if unknown:
+                    text = f"not run: {{{unknown[0]}}} unknown"
+                    r.teardown.append(CommandRecord(command, None, 0.0, error=text, log=shown))
+                    ui.warn(f"teardown: {' '.join(command)}: {text}")
+                    continue
+                argv = [
+                    part.format(port=r.port, chip=r.chip, example=example, board=scenario.board.key)
+                    for part in command
+                ]
+                try:
+                    rec = self._host(argv, path, scenario.hook_timeout, r.teardown)
+                except Exception as e:  # one broken hook must not keep the others from running
+                    rec = CommandRecord(
+                        tuple(argv), None, 0.0, error=f"{type(e).__name__}: {e}", log=shown
+                    )
+                    r.teardown.append(rec)
+                if not rec.ok:
+                    ui.warn(f"teardown: {rec.summary()}")
+        except KeyboardInterrupt:
+            ui.progress_done()
+            print()
+            for command in scenario.teardown[len(r.teardown) :]:
+                r.teardown.append(
+                    CommandRecord(command, None, 0.0, error="interrupted by Ctrl-C", log="")
+                )
+            self.stopped = True
+            ui.warn("teardown interrupted; the remaining commands were skipped")
 
     def _run_example(
         self, scenario: Scenario, example: str, stamp: datetime, r: ExampleResult
     ) -> None:
         board = scenario.board
+        if not self._setup(scenario, example, stamp, r):
+            return
         if self.opts.build and not _run(self.cfg.build_for(board), self.opts.repo, example=example):
             r.verdict, r.detail = "fail", "build failed"
             return
@@ -290,7 +385,7 @@ class Session:
             r.verdict, r.detail = "fail", "flash failed"
             return
 
-        log = self.cfg.board_dir(scenario.board) / "logs" / f"{example}-{stamp:%Y%m%d-%H%M%S}.log"
+        log = self._log_path(scenario, example, stamp)
         r.log = str(log.relative_to(self.opts.repo))
         # Resets into the app on open, as the board's `reset` says.
         with SerialLines(d.port, log, baud=board.baud, reset=board.reset) as lines:
@@ -314,10 +409,14 @@ class Session:
                 missing = [
                     f"(?P={name})"
                     for name in sorted(
-                        {name for p in (*step.expect, step.reject or "") for name in references(p)}
+                        {
+                            name
+                            for p in (*step.expect, step.reject or "", step.serial_reject or "")
+                            for name in references(p)
+                        }
                         - set(captured)
                     )
-                ] + sorted(placeholders(step.probe) - PROBE_FIELDS - set(captured))
+                ] + sorted(placeholders((*step.probe, *step.run)) - PROBE_FIELDS - set(captured))
                 if missing:
                     ui.step(n, total, step.say)
                     res = StepResult(
@@ -348,6 +447,9 @@ class Session:
                     step,
                     expect=tuple(resolve(p, captured) for p in step.expect),
                     reject=resolve(step.reject, captured) if step.reject else None,
+                    serial_reject=(
+                        resolve(step.serial_reject, captured) if step.serial_reject else None
+                    ),
                 )
                 for name in declared:
                     captured.pop(name, None)
@@ -366,35 +468,13 @@ class Session:
                                 self._ready_quietly(lines, step.say)
                         if not step.probe:
                             lines.drain()
-                    unreset = step.reset and not step.probe and not lines.reset()
                     # An attended watch ends early on Enter: the operator has seen enough.
                     stop = (
                         ui.enter_pressed
                         if step.attended and step.duration is not None and not self.opts.assume_yes
                         else None
                     )
-                    res = (
-                        StepResult(
-                            step.say, False, "the board did not reset", optional=step.optional
-                        )
-                        if unreset
-                        else self._run_probe(
-                            step,
-                            [part.format(**subst) for part in step.probe],
-                            lines,
-                            log,
-                            n,
-                            seconds,
-                        )
-                        if step.probe
-                        else run_step(
-                            step,
-                            lines,
-                            lambda q: self._ask_quietly(lines, q),
-                            duration=seconds,
-                            stop=stop,
-                        )
-                    )
+                    res = self._attempt(step, subst, lines, log, n, seconds, stop)
                     ui.verdict(res.ok, res.detail, res.optional, res.unverified)
                     # `-y` must not retry: answering its default (yes) would loop forever.
                     if not res.failed or self.opts.assume_yes:
@@ -422,30 +502,73 @@ class Session:
         if unverified:
             r.detail += f", {len(unverified)} unverified"
 
-    def _run_probe(
+    def _attempt(
         self,
         step: Step,
-        argv: list[str],
+        subst: dict[str, str],
         serial: SerialLines,
         log: Path,
         n: int,
         seconds: float | None,
+        stop: Callable[[], bool] | None,
     ) -> StepResult:
-        """Run a probe step against its command's stdout; the serial lines are not judged."""
-        ui.info("$ " + " ".join(argv))
+        """One try at a step: reset, start the probe, run the action, then judge.
+
+        A probe step judges its command's stdout; its serial lines are judged only against
+        `serial_reject`. A failing `run` command fails the step before any judging.
+        """
+        if step.reset and not step.probe and not serial.reset():
+            return StepResult(step.say, False, "the board did not reset", optional=step.optional)
         started = time.monotonic()
-        probe_log = log.with_name(f"{log.stem}.probe{n}{log.suffix}")
+        record: CommandRecord | None = None
         with ExitStack() as stack:
+            probe: ProbeLines | None = None
+            guard: GuardedLines | None = None
+            source: LineSource = serial
+            if step.probe:
+                argv = [part.format(**subst) for part in step.probe]
+                ui.info("$ " + " ".join(argv))
+                probe_log = log.with_name(f"{log.stem}.probe{n}{log.suffix}")
+                try:
+                    probe = stack.enter_context(self.open_probe(argv, self.opts.repo, probe_log))
+                except (FileNotFoundError, PermissionError) as e:
+                    raise device.missing_tool(argv[0], e) from e
+                source = probe
+                if step.serial_reject:
+                    guard = GuardedLines(probe, serial, re.compile(step.serial_reject))
+                    source = guard
+            if step.run:
+                run_log = log.with_name(f"{log.stem}.run{n}{log.suffix}")
+                record = self._host(
+                    [part.format(**subst) for part in step.run], run_log, step.run_timeout
+                )
+                if not record.ok:
+                    return StepResult(
+                        step.say,
+                        False,
+                        f"run failed: {record.summary()}",
+                        optional=step.optional,
+                        run=record,
+                    )
             try:
-                probe = stack.enter_context(self.open_probe(argv, self.opts.repo, probe_log))
-            except (FileNotFoundError, PermissionError) as e:
-                raise device.missing_tool(argv[0], e) from e
-            res = run_step(step, probe, lambda q: self._ask_quietly(serial, q), duration=seconds)
-            if res.failed:
+                res = run_step(
+                    step,
+                    source,
+                    lambda q: self._ask_quietly(serial, q),
+                    duration=seconds,
+                    stop=stop,
+                )
+                if guard is not None and res.ok:
+                    guard.check()  # a line that came in after the last poll still counts
+            except SerialRejected as e:
+                res = StepResult(
+                    step.say, False, f"rejected serial line: {e.line!r}", optional=step.optional
+                )
+            if res.failed and probe is not None:
                 res = replace(res, detail=f"{res.detail}; {probe.exit_note()}")
-        if serial.link_lost_since(started):
+        if step.probe and serial.link_lost_since(started):
             ui.warn("serial connection lost during this step; the board was not judged")
-        return res
+        return replace(res, run=record) if record is not None else res
 
     def _record(self, scenario: Scenario, r: ExampleResult) -> None:
         path = self.cfg.board_dir(scenario.board) / "results.jsonl"

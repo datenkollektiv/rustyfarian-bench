@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `probe = ["cmd", ...]` on an `expect` or `duration` step judges a host command's stdout instead of the serial lines, so a broker check no longer needs a `confirm`.
   The command runs in the consumer directory in its own process group, is ended with SIGTERM and then SIGKILL, and may use `{port}`, `{example}`, `{board}`, `{chip}` and earlier captures.
   Probe steps are unattended, and a command that exits early reads as a lost link; POSIX only.
+- `serial_reject = 'regex'` on a `probe` step judges the serial lines while the probe runs, so a board panic fails the step instead of going unnoticed.
+- `attended = true` is allowed on a `probe` step: it runs with `--attended` and is skipped by `--unattended`, and Enter ends an attended probe `duration` early.
+- Scenario `setup` and `teardown` command lists run once per example (setup before the build, teardown always, also after Ctrl-C), with `hook_timeout` (default 60 s) per command.
+  A failed setup is an `error` before anything is built or flashed; a failing teardown command is a warning.
+- `run = ["cmd", ...]` on an `expect` or `duration` step runs a host command after the reset and before judging, with `run_timeout` (default 30 s); a failing run fails the step.
+  Each command's argv, exit code, duration and output tails are recorded, with a log beside the serial log.
+
+### Changed
+
+- `results.jsonl` gains `setup` and `teardown` per example and `run` per step; the new fields are always present and the old keys are unchanged.
 
 ## [0.4.0] - 2026-11-09
 

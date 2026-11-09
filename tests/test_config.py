@@ -567,13 +567,10 @@ def test_a_malformed_probe_is_a_config_error(tmp_path: Path, value: str, message
     ("other", "word"),
     [
         ('confirm = "ok?"', "confirm"),
-        ("attended = true", "attended"),
         ("reset = true", "reset"),
     ],
 )
-def test_a_probe_step_cannot_also_need_a_person_or_reset(
-    tmp_path: Path, other: str, word: str
-) -> None:
+def test_a_probe_step_cannot_also_confirm_or_reset(tmp_path: Path, other: str, word: str) -> None:
     lines = [PROBE, other] if word == "confirm" else [PROBE, 'expect = "a"', other]
     with pytest.raises(ConfigError, match=word):
         load_scenario(tmp_path, scenario(*lines))
@@ -620,3 +617,263 @@ def test_a_capture_named_like_a_reserved_field_still_loads(tmp_path: Path) -> No
     text = CAPTURING.replace("(?P<cid>", "(?P<port>").replace("{cid}", "{port}")
     cfg = load_scenario(tmp_path, text)
     assert cfg.scenarios[0].steps[1].probe == ("watch", "{port}")
+
+
+# Attended probes: a probe step may need a person (an unplug) while its command observes.
+
+
+def test_a_probe_step_with_attended_is_accepted_and_needs_a_person(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario(PROBE, 'expect = "a"', "attended = true"))
+    (step,) = cfg.scenarios[0].steps
+    assert step.attended is True
+    assert step.probe == ("just", "mqtt-watch", "{example}")
+    assert step.needs_person
+    assert Step(say="s", probe=("true",), expect=("a",), attended=True).needs_person
+
+
+# serial_reject: the serial lines are judged while a probe step runs.
+
+
+def test_serial_reject_parses_on_a_probe_step(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario(PROBE, 'expect = "a"', "serial_reject = 'PANIC|boom'"))
+    (step,) = cfg.scenarios[0].steps
+    assert step.serial_reject == "PANIC|boom"
+    assert Step(say="s", probe=("true",), expect=("a",)).serial_reject is None
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ['expect = "a"', "duration = 5", 'confirm = "ok?"'],
+    ids=["expect", "duration", "confirm"],
+)
+def test_serial_reject_without_probe_is_a_config_error(tmp_path: Path, kind: str) -> None:
+    with pytest.raises(ConfigError, match=r"'serial_reject' needs 'probe'"):
+        load_scenario(tmp_path, scenario(kind, "serial_reject = 'PANIC'"))
+
+
+def test_serial_reject_must_be_a_regex(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"c\.toml step 1"):
+        load_scenario(tmp_path, scenario(PROBE, 'expect = "a"', "serial_reject = '('"))
+
+
+def test_serial_reject_must_be_a_string(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="serial_reject"):
+        load_scenario(tmp_path, scenario(PROBE, 'expect = "a"', "serial_reject = 5"))
+
+
+def test_serial_reject_may_refer_to_an_earlier_capture(tmp_path: Path) -> None:
+    text = (
+        'examples = ["x"]\n[[step]]\nsay = "learn"\nexpect = \'pole (?P<pole>SOUTH|NORTH)\'\n'
+        '[[step]]\nsay = "watch"\nprobe = ["watch"]\nexpect = "a"\n'
+        "serial_reject = 'PANIC (?P=pole)'\n"
+    )
+    cfg = load_scenario(tmp_path, text)
+    assert cfg.scenarios[0].steps[1].serial_reject == "PANIC (?P=pole)"
+
+
+def test_serial_reject_cannot_refer_to_a_capture_nothing_made(tmp_path: Path) -> None:
+    text = scenario(PROBE, 'expect = "a"', "serial_reject = 'PANIC (?P=pole)'")
+    with pytest.raises(ConfigError, match=r"'serial_reject' refers to \(\?P=pole\)"):
+        load_scenario(tmp_path, text)
+
+
+# run: a host command the step starts, then judges what it caused.
+
+RUN = 'run = ["just", "mqtt-pub", "cmd", "{example}"]'
+
+
+def test_run_parses_with_expect_and_defaults_its_timeout(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario(RUN, 'expect = "rx"'))
+    (step,) = cfg.scenarios[0].steps
+    assert step.run == ("just", "mqtt-pub", "cmd", "{example}")
+    assert step.run_timeout == 30.0
+    assert step.expect == ("rx",)
+
+
+def test_run_parses_with_duration_and_an_explicit_timeout(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario(RUN, "duration = 5", "run_timeout = 5"))
+    (step,) = cfg.scenarios[0].steps
+    assert step.run == ("just", "mqtt-pub", "cmd", "{example}")
+    assert step.run_timeout == 5.0
+    assert step.duration == 5.0
+
+
+def test_a_step_without_run_has_an_empty_one() -> None:
+    step = Step(say="s", expect=("a",))
+    assert step.run == ()
+    assert step.run_timeout == 30.0
+
+
+def test_run_alone_is_not_a_step_kind(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="exactly one"):
+        load_scenario(tmp_path, scenario(RUN))
+
+
+def test_run_cannot_be_combined_with_confirm(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"'run' cannot be combined with 'confirm'"):
+        load_scenario(tmp_path, scenario(RUN, 'confirm = "ok?"'))
+
+
+def test_run_may_be_combined_with_a_probe_and_with_reset(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario(PROBE, RUN, 'expect = "a"'))
+    assert cfg.scenarios[0].steps[0].probe and cfg.scenarios[0].steps[0].run
+    cfg = load_scenario(tmp_path, scenario(RUN, 'expect = "a"', "reset = true"))
+    assert cfg.scenarios[0].steps[0].reset
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-0.5", '"soon"', "true"])
+def test_run_timeout_must_be_a_positive_number(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match="run_timeout"):
+        load_scenario(tmp_path, scenario(RUN, 'expect = "a"', f"run_timeout = {value}"))
+
+
+def test_run_timeout_without_run_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"'run_timeout' needs 'run'"):
+        load_scenario(tmp_path, scenario('expect = "a"', "run_timeout = 5"))
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("[]", "must not be empty"),
+        ('[1, "x"]', "expected a string or a list of strings"),
+        ('["just", "{nope}"]', "unknown placeholder {nope}"),
+    ],
+    ids=["empty", "non-string", "unknown-placeholder"],
+)
+def test_a_malformed_run_is_a_config_error(tmp_path: Path, value: str, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_scenario(tmp_path, scenario(f"run = {value}", 'expect = "a"'))
+
+
+@pytest.mark.parametrize("name", ["port", "example", "board", "chip"])
+def test_run_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
+    cfg = load_scenario(tmp_path, scenario(f'run = ["pub", "{{{name}}}"]', 'expect = "a"'))
+    assert cfg.scenarios[0].steps[0].run == ("pub", f"{{{name}}}")
+
+
+def test_run_accepts_a_name_an_earlier_step_captured(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, CAPTURING.replace("probe = ", "run = "))
+    assert cfg.scenarios[0].steps[1].run == ("watch", "{cid}")
+
+
+def test_run_rejects_a_name_only_a_later_step_captures(tmp_path: Path) -> None:
+    text = (
+        'examples = ["x"]\n[[step]]\nsay = "pub"\nrun = ["pub", "{cid}"]\nexpect = "a"\n'
+        "[[step]]\nsay = \"learn\"\nexpect = 'client (?P<cid>\\w+)'\n"
+    )
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_run_rejects_a_name_its_own_step_captures(tmp_path: Path) -> None:
+    text = scenario('run = ["pub", "{cid}"]', "expect = 'client (?P<cid>\\w+)'")
+    with pytest.raises(ConfigError, match=r"unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_run_alone_needs_no_person_and_attended_does() -> None:
+    assert not Step(say="s", run=("pub",), expect=("a",)).needs_person
+    assert Step(say="s", run=("pub",), expect=("a",), attended=True).needs_person
+
+
+# setup / teardown / hook_timeout: scenario-level host commands around each example.
+
+
+def hooked(*scenario_lines: str) -> str:
+    head = 'examples = ["x"]\n' + "\n".join(scenario_lines) + "\n"
+    return head + '[[step]]\nsay = "s"\nexpect = "a"\n'
+
+
+def test_setup_and_teardown_parse_as_lists_of_argv_lists_in_order(tmp_path: Path) -> None:
+    text = hooked(
+        'setup = [["just", "mosquitto", "up"], ["just", "mqtt-status"]]',
+        'teardown = [["just", "mosquitto", "down"]]',
+    )
+    (sc,) = load_scenario(tmp_path, text).scenarios
+    assert sc.setup == (("just", "mosquitto", "up"), ("just", "mqtt-status"))
+    assert sc.teardown == (("just", "mosquitto", "down"),)
+
+
+def test_a_scenario_without_hooks_has_empty_ones_and_a_60_s_timeout(tmp_path: Path) -> None:
+    (sc,) = load_scenario(tmp_path, scenario('expect = "a"')).scenarios
+    assert sc.setup == ()
+    assert sc.teardown == ()
+    assert sc.hook_timeout == 60.0
+
+
+def test_hook_timeout_is_read(tmp_path: Path) -> None:
+    (sc,) = load_scenario(tmp_path, hooked("hook_timeout = 5")).scenarios
+    assert sc.hook_timeout == 5.0
+
+
+@pytest.mark.parametrize("value", ["0", "-1", '"long"', "true"])
+def test_hook_timeout_must_be_a_positive_number(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match="hook_timeout"):
+        load_scenario(tmp_path, hooked(f"hook_timeout = {value}"))
+
+
+@pytest.mark.parametrize("key", ["setup", "teardown"])
+@pytest.mark.parametrize("value", ["5", "'just up'"], ids=["number", "string"])
+def test_a_hook_that_is_not_a_list_is_a_config_error(tmp_path: Path, key: str, value: str) -> None:
+    with pytest.raises(ConfigError, match=f"'{key}' must be a list of argv lists"):
+        load_scenario(tmp_path, hooked(f"{key} = {value}"))
+
+
+@pytest.mark.parametrize("key", ["setup", "teardown"])
+@pytest.mark.parametrize(
+    "value",
+    ["[[]]", '[["a", 1]]', "[5]", '[["ok"], []]'],
+    ids=["empty-command", "non-string-word", "non-list-command", "second-empty"],
+)
+def test_a_malformed_hook_command_names_its_index(tmp_path: Path, key: str, value: str) -> None:
+    index = 1 if value == '[["ok"], []]' else 0
+    with pytest.raises(ConfigError, match=rf"{key}\[{index}\]"):
+        load_scenario(tmp_path, hooked(f"{key} = {value}"))
+
+
+def test_setup_accepts_example_and_board(tmp_path: Path) -> None:
+    text = hooked('setup = [["up", "{example}", "{board}"]]')
+    (sc,) = load_scenario(tmp_path, text).scenarios
+    assert sc.setup == (("up", "{example}", "{board}"),)
+
+
+def test_setup_rejects_port_with_its_index_and_the_allowed_names(tmp_path: Path) -> None:
+    text = hooked('setup = [["a"], ["b"], ["c", "{port}"]]')
+    message = r"setup\[2\]: unknown placeholder \{port\}; allowed: \['board', 'example'\]"
+    with pytest.raises(ConfigError, match=message):
+        load_scenario(tmp_path, text)
+
+
+@pytest.mark.parametrize("name", ["chip", "nope", "cid"])
+def test_setup_rejects_every_other_name(tmp_path: Path, name: str) -> None:
+    # `cid` is what an earlier step captures: hooks never see captures.
+    text = (
+        'examples = ["x"]\n'
+        f'setup = [["up", "{{{name}}}"]]\n'
+        "[[step]]\nsay = \"learn\"\nexpect = 'client (?P<cid>\\w+)'\n"
+    )
+    with pytest.raises(ConfigError, match=rf"setup\[0\].*unknown placeholder \{{{name}\}}"):
+        load_scenario(tmp_path, text)
+
+
+@pytest.mark.parametrize("name", ["port", "example", "board", "chip"])
+def test_teardown_accepts_each_reserved_placeholder(tmp_path: Path, name: str) -> None:
+    (sc,) = load_scenario(tmp_path, hooked(f'teardown = [["down", "{{{name}}}"]]')).scenarios
+    assert sc.teardown == (("down", f"{{{name}}}"),)
+
+
+def test_teardown_rejects_a_capture_name(tmp_path: Path) -> None:
+    text = (
+        'examples = ["x"]\n'
+        'teardown = [["down", "{cid}"]]\n'
+        "[[step]]\nsay = \"learn\"\nexpect = 'client (?P<cid>\\w+)'\n"
+    )
+    with pytest.raises(ConfigError, match=r"teardown\[0\].*unknown placeholder \{cid\}"):
+        load_scenario(tmp_path, text)
+
+
+def test_the_setup_field_names_are_example_and_board() -> None:
+    from rustyfarian_bench.config import SETUP_FIELDS
+
+    assert frozenset({"example", "board"}) == SETUP_FIELDS

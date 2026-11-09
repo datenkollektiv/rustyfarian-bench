@@ -53,6 +53,8 @@ class Board:
 
 # Placeholders a probe command may use besides the names earlier steps captured.
 PROBE_FIELDS = frozenset({"port", "example", "board", "chip"})
+# Placeholders a scenario's `setup` may use: it runs before the board is detected.
+SETUP_FIELDS = frozenset({"example", "board"})
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,9 @@ class Step:
       the firmware runs at boot, e.g. a calibration window.
     - `probe`: a host command (argv) whose stdout is judged instead of the serial lines, with
       `expect` or `duration`; `{port}`, `{example}`, `{board}`, `{chip}` and captures fill in.
+    - `serial_reject`: with `probe`, a pattern that fails the step when a serial line matches it.
+    - `run`: a host command (argv) run once the step starts, before it is judged; same
+      placeholders as `probe`. A failing command fails the step. `run_timeout` bounds it.
 
     A named group in an `expect` pattern, `(?P<pole>SOUTH|NORTH)`, captures the matched text;
     a later step's `expect` or `reject` refers to it as `(?P=pole)`, matched literally.
@@ -90,6 +95,9 @@ class Step:
     attended: bool = False
     reset: bool = False
     probe: tuple[str, ...] = ()
+    run: tuple[str, ...] = ()
+    run_timeout: float = 30.0
+    serial_reject: str | None = None
 
     @property
     def needs_person(self) -> bool:
@@ -103,6 +111,10 @@ class Scenario:
     examples: tuple[str, ...]
     steps: tuple[Step, ...]
     path: Path
+    # Host commands around each example; `hook_timeout` bounds every one of them.
+    setup: tuple[tuple[str, ...], ...] = ()
+    teardown: tuple[tuple[str, ...], ...] = ()
+    hook_timeout: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -324,6 +336,9 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
         "attended",
         "reset",
         "probe",
+        "run",
+        "run_timeout",
+        "serial_reject",
     }
     unknown = set(raw) - known
     if unknown:
@@ -360,13 +375,26 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
     probe: tuple[str, ...] = ()
     if "probe" in raw:
         probe = _command(raw["probe"], f"{where}: probe", set(PROBE_FIELDS | captures))
-        for key, used in (
-            ("confirm", confirm is not None),
-            ("attended", attended),
-            ("reset", reset),
-        ):
+        for key, used in (("confirm", confirm is not None), ("reset", reset)):
             if used:
                 raise ConfigError(f"{where}: 'probe' cannot be combined with '{key}'")
+    serial_reject = _text(raw, "serial_reject", where)
+    if serial_reject is not None:
+        if not probe:
+            raise ConfigError(f"{where}: 'serial_reject' needs 'probe'")
+        _pattern(serial_reject, "serial_reject", where, captures)
+    run: tuple[str, ...] = ()
+    if "run" in raw:
+        if confirm is not None:
+            raise ConfigError(f"{where}: 'run' cannot be combined with 'confirm'")
+        run = _command(raw["run"], f"{where}: run", set(PROBE_FIELDS | captures))
+    run_timeout = _number(raw, "run_timeout", 30.0, where)
+    assert run_timeout is not None
+    if "run_timeout" in raw:
+        if not run:
+            raise ConfigError(f"{where}: 'run_timeout' needs 'run'")
+        if run_timeout <= 0:
+            raise ConfigError(f"{where}: 'run_timeout' must be > 0")
     return Step(
         say=say,
         expect=expect,
@@ -380,7 +408,22 @@ def _parse_step(raw: Any, where: str, captures: frozenset[str] = frozenset()) ->
         attended=attended,
         reset=reset,
         probe=probe,
+        run=run,
+        run_timeout=run_timeout,
+        serial_reject=serial_reject,
     )
+
+
+def _commands(
+    raw: dict[str, Any], key: str, where: str, allowed: set[str]
+) -> tuple[tuple[str, ...], ...]:
+    """A scenario's `setup` or `teardown`: a list of argv lists; `()` when absent."""
+    if key not in raw:
+        return ()
+    value = raw[key]
+    if not isinstance(value, list):
+        raise ConfigError(f'{where}: \'{key}\' must be a list of argv lists, e.g. [["just", "up"]]')
+    return tuple(_command(item, f"{where}: {key}[{i}]", allowed) for i, item in enumerate(value))
 
 
 def _board_command(raw: dict[str, Any], key: str, where: str, allowed: set[str]) -> tuple[str, ...]:
@@ -487,6 +530,12 @@ def load(repo: Path) -> BenchConfig:
                     groups = re.compile(resolve(p, dict.fromkeys(captures, "x"))).groupindex
                     captures |= set(groups)
             steps = tuple(parsed)
+            setup = _commands(raw, "setup", where, set(SETUP_FIELDS))
+            teardown = _commands(raw, "teardown", where, set(PROBE_FIELDS))
+            hook_timeout = _number(raw, "hook_timeout", 60.0, where)
+            assert hook_timeout is not None
+            if hook_timeout <= 0:
+                raise ConfigError(f"{where}: 'hook_timeout' must be > 0")
             if board.reset == "none" and any(st.reset for st in steps):
                 raise ConfigError(f"{where}: a step sets 'reset', but board {key} has reset = none")
             if not steps:
@@ -498,6 +547,9 @@ def load(repo: Path) -> BenchConfig:
                     examples=_examples(raw["examples"], where),
                     steps=steps,
                     path=path,
+                    setup=setup,
+                    teardown=teardown,
+                    hook_timeout=hook_timeout,
                 )
             )
 

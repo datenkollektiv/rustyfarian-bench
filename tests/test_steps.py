@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -349,3 +350,149 @@ def test_duration_judges_queued_lines_before_reporting_a_lost_link() -> None:
     res = run_step(step, lines, never)
     assert not res.ok
     assert res.detail == "rejected line: 'ERROR'"
+
+
+# An attended probe: the operator ends its duration with Enter, like an attended serial watch.
+
+
+def test_an_attended_probe_duration_ends_early_on_enter() -> None:
+    step = Step(say="unplug", probe=("watch",), duration=5, attended=True)
+    res = run_step(step, FakeProbeLines(), never, stop=lambda: True)
+    assert res.ok
+    assert "ended by operator after" in res.detail
+
+
+def test_a_probe_line_seen_before_the_stop_still_fails() -> None:
+    step = Step(say="unplug", probe=("watch",), duration=5, attended=True, reject="refused")
+    res = run_step(step, FakeProbeLines("refused"), never, stop=lambda: True)
+    assert not res.ok
+    assert "refused" in res.detail
+
+
+# run: a step that starts a host command skips the duration drain, so the board's reaction to
+# the action is judged.
+
+
+def test_a_duration_step_drops_the_backlog_first() -> None:
+    lines = FakeLines("old")
+    res = run_step(Step(say="quiet", duration=0.2), lines, never)
+    assert res.ok
+    assert lines.drained == 1
+
+
+def test_a_duration_step_with_run_keeps_the_backlog() -> None:
+    lines = FakeLines("PANIC before the action", echo=False)
+    step = Step(say="react", run=("pub",), duration=0.2, reject="PANIC")
+    res = run_step(step, lines, never)
+    assert lines.drained == 0
+    assert not res.ok
+    assert "PANIC" in res.detail
+
+
+# GuardedLines: a probe step's lines, with the serial lines watched for a pattern meanwhile.
+
+PANIC = re.compile("PANIC|panicked")
+
+
+def test_guarded_lines_drain_the_serial_backlog_at_construction() -> None:
+    from rustyfarian_bench.steps import GuardedLines
+
+    serial = FakeLines("PANIC from before the step")
+    GuardedLines(FakeProbeLines("online"), serial, PANIC)
+    assert serial.drained == 1
+    assert list(serial.queue) == []
+
+
+def test_guarded_lines_pass_the_probe_lines_through() -> None:
+    from rustyfarian_bench.steps import GuardedLines
+
+    serial = FakeLines()
+    guarded = GuardedLines(FakeProbeLines("one", "two"), serial, PANIC)
+    assert guarded.get(0.1) == "one"
+    assert guarded.get(0.1) == "two"
+    assert guarded.get(0.1) is None
+
+
+def test_guarded_lines_ignore_serial_lines_that_do_not_match() -> None:
+    from rustyfarian_bench.steps import GuardedLines
+
+    serial = FakeLines()
+    guarded = GuardedLines(FakeProbeLines("online"), serial, PANIC)
+    serial.queue.append("boot ok")
+    assert guarded.get(0.1) == "online"
+    assert list(serial.queue) == []  # looked at, judged fine, gone
+
+
+def test_guarded_lines_raise_with_the_offending_serial_line() -> None:
+    from rustyfarian_bench.steps import GuardedLines, SerialRejected
+
+    serial = FakeLines()
+    guarded = GuardedLines(FakeProbeLines("online"), serial, PANIC)
+    serial.queue.append("thread panicked at main.rs")
+    with pytest.raises(SerialRejected) as caught:
+        guarded.get(0.1)
+    assert caught.value.line == "thread panicked at main.rs"
+
+
+def test_guarded_lines_raise_out_of_an_expect_step() -> None:
+    from rustyfarian_bench.steps import GuardedLines, SerialRejected
+
+    serial = FakeLines()
+    guarded = GuardedLines(FakeProbeLines(), serial, PANIC)
+    serial.queue.append("PANIC: boom")
+    step = Step(say="watch", probe=("watch",), expect=("online",), timeout=1)
+    with pytest.raises(SerialRejected) as caught:
+        run_step(step, guarded, never)
+    assert caught.value.line == "PANIC: boom"
+
+
+def test_guarded_lines_raise_out_of_a_duration_step() -> None:
+    from rustyfarian_bench.steps import GuardedLines, SerialRejected
+
+    serial = FakeLines()
+    guarded = GuardedLines(FakeProbeLines(), serial, PANIC)
+    serial.queue.append("PANIC: boom")
+    step = Step(say="watch", probe=("watch",), duration=1)
+    with pytest.raises(SerialRejected):
+        run_step(step, guarded, never)
+
+
+def test_guarded_lines_raise_while_the_step_settles() -> None:
+    from rustyfarian_bench.steps import GuardedLines, SerialRejected
+
+    serial = FakeLines()
+    guarded = GuardedLines(FakeProbeLines("online"), serial, PANIC)
+    seen: list[int] = []
+
+    def late_panic() -> None:  # the probe matches first; the board panics during settle
+        if seen:
+            serial.queue.append("PANIC: late")
+        seen.append(1)
+
+    serial.on_get = late_panic
+    step = Step(say="watch", probe=("watch",), expect=("online",), settle=1, timeout=1)
+    with pytest.raises(SerialRejected) as caught:
+        run_step(step, guarded, never)
+    assert caught.value.line == "PANIC: late"
+
+
+def test_guarded_lines_are_a_no_op_while_the_serial_side_is_quiet() -> None:
+    from rustyfarian_bench.steps import GuardedLines
+
+    serial = FakeLines()
+    guarded = GuardedLines(FakeProbeLines("online"), serial, PANIC)
+    step = Step(say="watch", probe=("watch",), expect=("online",), timeout=1)
+    assert run_step(step, guarded, never).ok
+
+
+def test_guarded_lines_speak_for_the_probe_when_it_ends() -> None:
+    from rustyfarian_bench.steps import GuardedLines
+
+    probe = FakeProbeLines()
+    probe.lost = True
+    guarded = GuardedLines(probe, FakeLines(), PANIC)
+    assert guarded.lost_text == "probe command exited"
+    assert guarded.link_lost_since(1.5) is True
+    assert probe.lost_since_args == [1.5]
+    guarded.drain()
+    assert probe.drained == 1
