@@ -48,7 +48,7 @@ Post-release version bump: none.
 ## Publish
 
 **Target:** git tag on `github.com/datenkollektiv/rustyfarian-bench` (public).
-**Registry:** none; PyPI is deferred (see `docs/features/remote-distribution-v1.md`).
+**Registry:** none; PyPI is deferred (see `docs/features/archive/remote-distribution-v1.md`).
 
 ## Changelog
 

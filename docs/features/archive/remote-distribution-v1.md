@@ -29,16 +29,17 @@ A fresh clone of a rustyfarian consumer runs `just bench <target>` without a rus
 - Pilot consumers are `rustyfarian-ws2812` and `rustyfarian-peripherals`; the remaining rustyfarian repos follow near term.
 
 ## Open Questions
-- [ ] When is tuning done enough to cut `v0.1.0`?
+- [x] When is tuning done enough to cut `v0.1.0`? Cut on 2026-11-07; v0.4.0 followed on 2026-11-09.
 
 ## State
 - [x] Design approved
-- [ ] GitHub remote pushed
-- [ ] CI workflow running `just verify`
-- [ ] `v0.1.0` released via `/release`
-- [ ] ws2812 and peripherals `bench` recipes switched to pinned `uvx` with `RUSTYFARIAN_BENCH` override
-- [ ] Fresh-clone check: a fresh consumer clone lists its scenarios with no sibling checkout
-- [ ] README documents the remote usage and prerequisites
+- [x] GitHub remote pushed (`origin` is github.com/datenkollektiv/rustyfarian-bench)
+- [x] CI workflow running `just verify` (`.github/workflows/verify.yml`)
+- [x] `v0.1.0` released via `/release` (tags v0.1.0 to v0.4.0)
+- [x] ws2812 and peripherals `bench` recipes switched to pinned `uvx` with `RUSTYFARIAN_BENCH` override (power, network and knob too)
+- [x] Fresh-clone check: `just smoke-install` lists a fixture consumer through an isolated `uvx`
+- [x] README documents the remote usage and prerequisites
 
 ## Session Log
 - 2026-11-07 — Feature doc created via /feature dialog
+- 2026-11-09 — Roadmap hygiene: state backfilled from the shipped releases and five pinned consumers; archived

@@ -55,3 +55,4 @@ A step can be judged from a host command's output instead of serial, so the brok
 - 2026-11-09 — Updated: consumer review (review-queue) adds `serial_reject`, attended probes and a retained-replay note
 - 2026-11-09 — Implemented serial_reject, attended probes and the retained-replay note
 - 2026-11-09 — Gate cleared: consumer ran `just bench c6 mqtt-scenarios --unattended`, 10/10 with four probe steps (review-queue)
+- 2026-11-09 — Roadmap hygiene: archived, shipped in the next release
