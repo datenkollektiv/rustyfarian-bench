@@ -258,7 +258,7 @@ The definition is checked strictly when it loads, before anything is built:
 - `run` must be a non-empty list of strings, needs `expect` or `duration`, and cannot be combined with `confirm`.
 - `run_timeout` must be greater than 0 and needs `run`.
 - `setup` and `teardown` must be lists of argv lists; `setup` may use only `{example}` and `{board}`, `teardown` also `{port}`, `{chip}` and `{mac}`.
-- `say` and `confirm` are checked like `probe`: only the reserved names and earlier captures, and a stray brace is an error; a literal brace is written `{{` or `}}`.
+- `say` and `confirm` are checked like `probe`: only the reserved names and earlier captures, and a stray brace is an error, as is a placeholder nested in a format spec; a literal brace is written `{{` or `}}`.
 - `hook_timeout` must be greater than 0.
 - A probe placeholder whose capture is missing at run time fails the step at once, before the command starts; so does `{mac}` when the board's MAC is unknown.
 - `examples` must not be empty, and the names must not contain `/` or `..`.

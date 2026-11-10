@@ -305,9 +305,14 @@ def _read_toml(path: Path) -> dict[str, Any]:
 def _check_fields(part: str, where: str, allowed: set[str]) -> None:
     """Fail on a brace that is malformed or names a field outside `allowed`."""
     try:
-        fields = [f for _, f, _, _ in string.Formatter().parse(part) if f is not None]
+        parsed = list(string.Formatter().parse(part))
     except ValueError as e:
         raise ConfigError(f"{where}: bad placeholder in {part!r}: {e}") from None
+    if any(spec and "{" in spec for _, f, spec, _ in parsed if f is not None):
+        raise ConfigError(
+            f"{where}: nested placeholder in {part!r}: a format spec cannot contain a field"
+        )
+    fields = [f for _, f, _, _ in parsed if f is not None]
     bad = [f for f in fields if f not in allowed]
     if bad:
         raise ConfigError(f"{where}: unknown placeholder {{{bad[0]}}}; allowed: {sorted(allowed)}")

@@ -16,6 +16,7 @@ Source: `review-queue/rustyfarian-bench-prompt-placeholders-v1.md`, items 1 and 
 |      `{mac}` joins the reserved set for prompts and commands | Detection already knows it; one field dict serves every consumer | A prompt-only `{mac}`                     |
 |   `{mac}` missing in `probe`/`run`/`teardown` fails that use | An argv cannot carry a marker; same rule as a missing capture    | Substitute an empty string                |
 | Load rule as for `probe`: reserved names or earlier captures | Typos and bad braces fail before hardware is touched             | Accept any capture name, mark at run time |
+|       A placeholder nested in a format spec is rejected at load | `{example:{mac}<10}` hides `mac` from the missing-value check   | Collect nested fields recursively         |
 
 ## Constraints
 - Prompts, `probe`, `run` and `teardown` share one field dict built per attempt; `{mac}` is not special-cased.
@@ -40,3 +41,4 @@ Source: `review-queue/rustyfarian-bench-prompt-placeholders-v1.md`, items 1 and 
 ## Session Log
 - 2026-11-10 — Feature doc created via /feature dialog from the review-queue request
 - 2026-11-10 — Implemented via workflow: say/confirm placeholders, {mac}, lacked markers, tests, README and CHANGELOG
+- 2026-11-10 — Decided: nested format fields are rejected, not collected; no rewrite of the placeholder scanner (reviewer finding)

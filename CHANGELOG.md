@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - A `run` step with `duration` no longer judges serial lines left over from earlier steps; the queue is cleared right before the command runs, and the board's reaction to it is still judged.
+- A placeholder nested in a format spec, such as `{example:{mac}<10}`, is rejected at load time; it used to slip past the missing-value check and abort the example at run time.
 - `serial_reject` now judges a serial line the board prints while the probe is starting; the backlog is cleared before the probe spawns, not after.
 
 ## [0.4.0] - 2026-11-09

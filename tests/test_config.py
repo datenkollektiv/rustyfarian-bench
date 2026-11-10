@@ -1033,8 +1033,54 @@ def test_setup_rejects_mac_with_its_index(tmp_path: Path) -> None:
         load_scenario(tmp_path, text)
 
 
-@pytest.mark.parametrize("say", ["{port:d}", "{port!x}", "{port:{ip}}", "{port:{nope}}"])
+@pytest.mark.parametrize("say", ["{port:d}", "{port!x}"])
 def test_a_bad_format_spec_or_conversion_in_a_prompt_is_rejected(tmp_path: Path, say: str) -> None:
     text = f'examples = ["x"]\n[[step]]\nsay = "Plug into {say}"\nexpect = "a"\n'
     with pytest.raises(ConfigError, match="bad placeholder"):
         load_scenario(tmp_path, text)
+
+
+# A field nested in a format spec is invisible to placeholders(), so the runner's missing-value
+# check would miss it and format() would raise KeyError mid-run. Reject it at load time.
+
+LEARN_IP = "[[step]]\nsay = \"learn\"\nexpect = 'ip (?P<ip>\\S+)'\n"
+
+
+def _nested_step(key: str, value: str) -> str:
+    body = {
+        "say": f'say = "{value}"\nexpect = "a"\n',
+        "confirm": f'say = "s"\nconfirm = "{value}"\n',
+        "probe": f'say = "s"\nprobe = ["watch", "{value}"]\nexpect = "a"\n',
+        "run": f'say = "s"\nrun = ["pub", "{value}"]\nexpect = "a"\n',
+    }[key]
+    return f"{LEARN_IP}[[step]]\n{body}"
+
+
+@pytest.mark.parametrize("key", ["say", "confirm", "probe", "run"])
+@pytest.mark.parametrize("value", ["{example:{mac}<10}", "{port:{ip}}", "{board:{example}}"])
+def test_a_placeholder_nested_in_a_format_spec_is_rejected(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    text = 'examples = ["x"]\n' + _nested_step(key, value)
+    with pytest.raises(ConfigError, match="nested placeholder"):
+        load_scenario(tmp_path, text)
+
+
+@pytest.mark.parametrize(
+    ("line", "label"),
+    [
+        ('setup = [["up", "{example:{board}}"]]', "setup"),
+        ('teardown = [["down", "{port:{chip}}"]]', "teardown"),
+    ],
+)
+def test_a_placeholder_nested_in_a_hook_format_spec_is_rejected(
+    tmp_path: Path, line: str, label: str
+) -> None:
+    with pytest.raises(ConfigError, match=rf"{label}\[0\].*nested placeholder"):
+        load_scenario(tmp_path, hooked(line))
+
+
+@pytest.mark.parametrize("key", ["say", "probe", "run"])
+def test_a_plain_format_spec_or_conversion_still_loads(tmp_path: Path, key: str) -> None:
+    for value in ("{port:>5}", "{ip!r}"):
+        load_scenario(tmp_path, 'examples = ["x"]\n' + _nested_step(key, value))
