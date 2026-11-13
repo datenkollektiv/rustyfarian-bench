@@ -38,6 +38,8 @@ class Board:
     # Per-board commands override `[commands]`; empty means use the global one.
     build: tuple[str, ...] = ()
     flash: tuple[str, ...] = ()
+    # Writes a merged flash image, for `submit`; `{example}` and `{image}` (the output path).
+    image: tuple[str, ...] = ()
     # `False` for boards espflash cannot identify (e.g. AVR): the port is taken as given.
     detect: bool = True
     # Serial settings: reset via RTS (native USB), DTR (auto-reset bridges) or not at all.
@@ -129,6 +131,7 @@ class BenchConfig:
     flash: tuple[str, ...]
     boards: dict[str, Board]
     scenarios: tuple[Scenario, ...] = field(default=())
+    image: tuple[str, ...] = ()
 
     def board_dir(self, board: Board) -> Path:
         return self.root / board.key
@@ -138,6 +141,9 @@ class BenchConfig:
 
     def flash_for(self, board: Board) -> tuple[str, ...]:
         return board.flash or self.flash
+
+    def image_for(self, board: Board) -> tuple[str, ...]:
+        return board.image or self.image
 
     def find(self, target: str) -> tuple[Scenario, ...]:
         """Scenarios for an example name, a `board/check` name, or a whole board."""
@@ -505,6 +511,7 @@ def _parse_board(key: str, raw: Any, where: str) -> Board:
         checks=checks,
         build=_board_command(raw, "build", where, {"example"}),
         flash=_board_command(raw, "flash", where, {"example", "port"}),
+        image=_board_command(raw, "image", where, {"example", "image"}),
         detect=detect,
         baud=_baud(raw, where),
         reset=_reset(raw, where),
@@ -548,6 +555,11 @@ def load(repo: Path) -> BenchConfig:
         flash = _command(commands["flash"], "commands.flash", {"example", "port"})
     except KeyError as e:
         raise ConfigError(f"{main}: missing commands.{e.args[0]}") from None
+    image = (
+        _command(commands["image"], "commands.image", {"example", "image"})
+        if "image" in commands
+        else ()
+    )
 
     boards = {
         key: _parse_board(key, b, f"boards.{key}")
@@ -601,5 +613,5 @@ def load(repo: Path) -> BenchConfig:
             )
 
     return BenchConfig(
-        root=root, build=build, flash=flash, boards=boards, scenarios=tuple(scenarios)
+        root=root, build=build, flash=flash, boards=boards, scenarios=tuple(scenarios), image=image
     )

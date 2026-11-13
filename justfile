@@ -14,7 +14,7 @@ verify: lint fmt-check typecheck test
 verify-python version:
     UV_PYTHON="{{ version }}" UV_PROJECT_ENVIRONMENT="tmp/venv-py{{ version }}" "{{ just_executable() }}" verify
 
-# build the wheel and run it the way a consumer's uvx does: --help, then list a fixture consumer
+# build the wheel and run it like a consumer's uvx: --help, list a fixture, the `serve` hint
 smoke-install:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -29,10 +29,16 @@ smoke-install:
         --repo "{{ justfile_directory() }}/tests/fixtures/consumer" list)
     echo "$out"
     grep -qE "^s3/smoke +smoke_example$" <<< "$out"
+    # the base wheel has no web stack: `serve` must name the extra and exit 2
+    rc=0
+    out=$(uvx --isolated --from "${wheel[0]}" rustyfarian-bench serve 2>&1) || rc=$?
+    echo "$out"
+    [ "$rc" -eq 2 ] || { echo "serve exited $rc, expected 2" >&2; exit 1; }
+    grep -qF "rustyfarian-bench[serve]" <<< "$out"
 
-# run the unit tests
+# run the unit tests (all extras, so the serve tests can import fastapi)
 test *args:
-    uv run --locked pytest {{ args }}
+    uv run --locked --all-extras pytest {{ args }}
 
 # lint with ruff
 lint:
@@ -48,7 +54,7 @@ fmt-check:
 
 # strict mypy
 typecheck:
-    uv run --locked mypy src tests
+    uv run --locked --all-extras mypy src tests
 
 # run the CI workflow locally via act (requires Docker + act): `just act` or `just act --matrix python:3.12`
 act *args:
@@ -62,6 +68,10 @@ clean:
 lock:
     uv lock
 
+# serve the remote bench from here, outbox in tmp/: `just serve --port 8001`
+serve *args:
+    uv run --locked --extra serve rustyfarian-bench serve --outbox tmp/outbox {{ args }}
+
 # probe the connected boards
 detect:
     uv run --locked rustyfarian-bench detect
@@ -73,3 +83,7 @@ bench repo target *args:
 # list a consumer's scenarios: `just bench-list rustyfarian-ws2812`
 bench-list repo:
     uv run --locked rustyfarian-bench --repo "{{ if repo =~ '^/' { repo } else { justfile_directory() / '..' / repo } }}" list
+
+# submit a consumer's check to a remote bench: `just submit rustyfarian-network c3 hal_c3_connect_async --bench http://pi.local:8000 --wait`
+submit repo board example *args:
+    uv run --locked rustyfarian-bench --repo "{{ if repo =~ '^/' { repo } else { justfile_directory() / '..' / repo } }}" submit "{{ board }}" "{{ example }}" {{ args }}

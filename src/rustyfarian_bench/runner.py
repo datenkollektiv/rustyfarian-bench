@@ -68,6 +68,12 @@ class Options:
     build: bool = True
     assume_yes: bool = False
     mode: Mode | None = None
+    # `False` runs only the named example, not its twins (a remote job has one image).
+    twins: bool = True
+    # Seconds to wait for the board before the run fails; None waits for it.
+    detect_timeout: float | None = None
+    # Refuse to guess between boards of one chip (`mac` in bench.toml pins one).
+    unique_board: bool = False
 
 
 def _run(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
@@ -180,7 +186,12 @@ class Session:
         if d and self._still_fits(scenario.board, d):
             return d
         if scenario.board.detect:
-            self.device = device.wait_for(scenario.board, self.opts.port)
+            self.device = device.wait_for(
+                scenario.board,
+                self.opts.port,
+                timeout=self.opts.detect_timeout,
+                unique=self.opts.unique_board,
+            )
         else:
             self.device = self._undetected(scenario)
         return self.device
@@ -194,7 +205,7 @@ class Session:
         board = scenario.board
         port = self.opts.port
         if port is None and board.usb_id is not None:
-            return device.wait_for_usb(board)
+            return device.wait_for_usb(board, timeout=self.opts.detect_timeout)
         if port is None:
             raise device.PortRequired(f"{board.name} cannot be detected; pick its port with --port")
         ui.info(f"Using {port} for {board.name} (not detected: {board.chip})")
@@ -242,6 +253,8 @@ class Session:
         scenarios = selected
         for n, scenario in enumerate(scenarios):
             examples, requested = self._plan(scenario, first_example)
+            if not self.opts.twins and first_example in scenario.examples:
+                examples = examples[:1]
             if n > 0 and not self.ask(f"Next check: {scenario.board.key}/{scenario.name}?"):
                 for later in scenarios[n:]:
                     self._skip(later, self._plan(later, first_example)[1])
@@ -277,7 +290,12 @@ class Session:
             r.verdict, r.detail = "aborted", "Ctrl-C"
             self.stopped = True
             ui.warn("aborted")
-        except (device.MissingTool, device.PortRequired) as e:
+        except (
+            device.MissingTool,
+            device.PortRequired,
+            device.NoBoardInTime,
+            device.AmbiguousBoard,
+        ) as e:
             r.verdict, r.detail = "error", str(e)
             self.stopped = True
             ui.warn(f"error: {r.detail}")

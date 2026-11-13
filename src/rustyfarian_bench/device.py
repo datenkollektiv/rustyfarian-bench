@@ -37,6 +37,14 @@ class PortRequired(RuntimeError):
     """An undetected board's port cannot be inferred; only `--port` can settle it."""
 
 
+class NoBoardInTime(RuntimeError):
+    """No matching board showed up before the detection deadline."""
+
+
+class AmbiguousBoard(RuntimeError):
+    """Several attached boards fit and nothing tells them apart; only `mac` can."""
+
+
 def missing_tool(tool: str, e: OSError) -> MissingTool:
     """Build the one-line message for a `tool` that is absent or not executable."""
     msg = f"cannot run {tool!r} ({e.strerror or e})"
@@ -136,18 +144,27 @@ def usb_ports(usb_id: str, usb_serial: str | None = None) -> list[str]:
     return sorted(found)
 
 
+def _no_board(board: Board, timeout: float | None, detail: str = "") -> NoBoardInTime:
+    msg = f"no {board.name} ({board.chip}) found within {timeout:g} s"
+    return NoBoardInTime(f"{msg}; {detail}" if detail else msg)
+
+
 def wait_for_usb(
     board: Board,
     poll: float = 0.25,
     ports_fn: Callable[[str, str | None], list[str]] = usb_ports,
     sleep_fn: Callable[[float], None] = time.sleep,
+    timeout: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Device:
     """Block until exactly one port carries the board's USB identity; Ctrl-C aborts.
 
     Never runs espflash. Several matches raise `PortRequired`: a serial number
     (`usb_serial`) or `--port` must tell them apart.
+    With `timeout` seconds given, `NoBoardInTime` ends the wait.
     """
     assert board.usb_id is not None
+    deadline = None if timeout is None else clock() + timeout
     asked = False
     while True:
         ports = ports_fn(board.usb_id, board.usb_serial)
@@ -162,6 +179,8 @@ def wait_for_usb(
         if not asked:
             info(f"Please plug in the test device: {board.name} (USB {board.usb_id})")
             asked = True
+        if deadline is not None and clock() >= deadline:
+            raise _no_board(board, timeout)
         sleep_fn(poll)
 
 
@@ -178,10 +197,15 @@ def wait_for(
     ports_fn: Callable[[], list[str]] = candidate_ports,
     probe_fn: Callable[[str], tuple[Device | None, str]] = probe,
     sleep_fn: Callable[[float], None] = time.sleep,
+    timeout: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    unique: bool = False,
 ) -> Device:
     """Block until a matching board answers; Ctrl-C aborts.
 
     Raises `MissingTool` when espflash cannot be run.
+    With `timeout` seconds given, raises `NoBoardInTime` at the deadline.
+    No probe starts after the deadline; a probe already running may overrun it.
 
     A port with the wrong chip is skipped until it disappears (board swapped).
     A port held by another process (a parallel session) is skipped while it stays
@@ -190,26 +214,48 @@ def wait_for(
     same chip should be told apart by `mac` in bench.toml.
     A port where no chip answers is retried: a sleeping or resetting board
     re-enumerates and may answer on a later attempt.
+
+    With `unique` (and neither `mac` nor `port` given) the first match is not enough:
+    every listed port is probed, and a second match raises `AmbiguousBoard`.
+    A match is returned only once every other port is a wrong chip, so a busy or
+    silent port blocks the decision until it resolves or the deadline names it.
     """
     info(f"Checking for {board.name} ({board.chip})...")
+    deadline = None if timeout is None else clock() + timeout
     asked = False
     hinted = False
     wrong_chip: set[str] = set()
     busy: set[str] = set()
     silent: dict[str, str] = {}  # port -> last error already reported
+    guard = unique and board.mac is None and port is None
+    matched: dict[str, Device] = {}  # `guard` only: matches found so far, not probed again
     misses = 0
+
+    def out_of_time(ports: list[str]) -> NoBoardInTime:
+        left = [p for p in ports if p not in matched and p not in wrong_chip]
+        if not guard or not left:
+            return _no_board(board, timeout)
+        state = ", ".join(f"{p} ({'busy' if p in busy else 'no answer'})" for p in left)
+        return _no_board(board, timeout, f"unresolved: {state}")
+
     while True:
         ports = [port] if port else ports_fn()
         ports = [p for p in ports if os.path.exists(p)]
         # Forget ports that went away, so a swapped or replugged board is probed again.
         wrong_chip &= set(ports)
         busy &= set(ports)
+        matched = {p: d for p, d in matched.items() if p in ports}
         silent = {p: e for p, e in silent.items() if p in ports}
         for p in ports:
-            if p in wrong_chip:
+            if deadline is not None and clock() >= deadline:
+                raise out_of_time(ports)
+            if p in wrong_chip or p in matched:
                 continue
             device, error = probe_fn(p)
             if device and matches(board, device):
+                if guard:
+                    matched[p] = device
+                    continue
                 info(f"Detected {device.chip} on {device.port} (MAC {device.mac})")
                 return device
             if error == BUSY:
@@ -234,7 +280,18 @@ def wait_for(
             if misses >= 2 and not hinted:
                 info(SLEEP_HINT)
                 hinted = True
+        if len(matched) >= 2:
+            raise AmbiguousBoard(
+                f"{len(matched)} {board.chip} boards attached ({', '.join(sorted(matched))}); "
+                "pin one with `mac` in bench.toml"
+            )
+        if len(matched) == 1 and all(p in matched or p in wrong_chip for p in ports):
+            (device,) = matched.values()
+            info(f"Detected {device.chip} on {device.port} (MAC {device.mac})")
+            return device
         if not ports and not asked:
             info(f"Please plug in the test device: {board.name}")
             asked = True
+        if deadline is not None and clock() >= deadline:
+            raise out_of_time(ports)
         sleep_fn(poll)

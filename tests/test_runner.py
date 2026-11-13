@@ -434,6 +434,38 @@ def test_declining_an_offered_twin_of_a_named_example_is_not_skipped_work(
     assert _outcomes(tmp_path) == [("ex1", "pass")]
 
 
+def test_no_twins_runs_only_the_named_example(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, _ = _interactive(tmp_path, monkeypatch, ())
+    session.opts = replace(session.opts, twins=False)
+
+    outcome = session.run((scenario,), "ex1")
+
+    assert outcome == "pass"
+    assert _outcomes(tmp_path) == [("ex1", "pass")]
+
+
+def test_no_twins_runs_a_later_named_example_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, _ = _interactive(tmp_path, monkeypatch, ())
+    session.opts = replace(session.opts, twins=False)
+
+    assert session.run((scenario,), "ex2") == "pass"
+    assert _outcomes(tmp_path) == [("ex2", "pass")]
+
+
+def test_no_twins_leaves_a_check_target_running_every_example(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario, _ = _interactive(tmp_path, monkeypatch, ())
+    session.opts = replace(session.opts, twins=False)
+
+    assert session.run((scenario,), "s3/chk") == "pass"
+    assert _outcomes(tmp_path) == [("ex1", "pass"), ("ex2", "pass")]
+
+
 def test_a_fail_outranks_skipped_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     session, scenario, _ = _interactive(
         tmp_path, monkeypatch, ("Start", "Retry", "Continue"), ok=False
@@ -786,6 +818,127 @@ def test_undetected_board_needs_port_and_stops_the_run(
     assert session.stopped
 
 
+def test_no_board_in_time_ends_the_run_with_one_error_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario = _session(tmp_path, monkeypatch, FakeLines(), "ex1", "ex2")
+    built: list[str] = []
+
+    def record_build(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
+        built.append(subst["example"])
+        return True
+
+    def nobody(self: runner.Session, s: Scenario) -> Device:
+        raise device.NoBoardInTime("no S3 (esp32s3) found within 30 s")
+
+    monkeypatch.setattr(runner, "_run", record_build)
+    monkeypatch.setattr(runner.Session, "_device_for", nobody)
+
+    outcome = session.run((scenario,), None)
+
+    assert built == ["ex1"]  # the twin never started
+    [row] = _rows(tmp_path)
+    assert row["verdict"] == "error"
+    assert row["detail"] == "no S3 (esp32s3) found within 30 s"
+    assert session.stopped
+    assert outcome == "error"
+
+
+@pytest.mark.parametrize("timeout", [None, 7.5])
+def test_detect_timeout_reaches_wait_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout: float | None
+) -> None:
+    board = Board("c6", "esp32c6", "C6")
+    scenario = Scenario("chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "c")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"c6": board}, (scenario,))
+    seen: list[tuple[str | None, float | None]] = []
+
+    def wait_for(
+        b: Board, port: str | None = None, *, timeout: float | None = None, unique: bool = False
+    ) -> Device:
+        seen.append((port, timeout))
+        return Device("/dev/cu.usbmodem2101", "esp32c6", None)
+
+    monkeypatch.setattr(device, "wait_for", wait_for)
+    opts = runner.Options(repo=tmp_path, detect_timeout=timeout)
+    runner.Session(cfg, opts)._device_for(scenario)
+
+    assert seen == [(None, timeout)]
+
+
+def test_an_ambiguous_board_ends_the_run_with_one_error_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session, scenario = _session(tmp_path, monkeypatch, FakeLines(), "ex1", "ex2")
+    built: list[str] = []
+
+    def record_build(cmd: tuple[str, ...], repo: Path, **subst: str) -> bool:
+        built.append(subst["example"])
+        return True
+
+    def two(self: runner.Session, s: Scenario) -> Device:
+        raise device.AmbiguousBoard("2 boards match S3: /dev/a, /dev/b; pin one with mac")
+
+    monkeypatch.setattr(runner, "_run", record_build)
+    monkeypatch.setattr(runner.Session, "_device_for", two)
+
+    outcome = session.run((scenario,), None)
+
+    assert built == ["ex1"]
+    [row] = _rows(tmp_path)
+    assert row["verdict"] == "error"
+    detail = str(row["detail"])
+    assert "/dev/a" in detail
+    assert "/dev/b" in detail
+    assert session.stopped
+    assert outcome == "error"
+
+
+@pytest.mark.parametrize("unique", [False, True])
+def test_unique_board_reaches_wait_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unique: bool
+) -> None:
+    board = Board("c6", "esp32c6", "C6")
+    scenario = Scenario("chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "c")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"c6": board}, (scenario,))
+    seen: list[bool] = []
+
+    def wait_for(
+        b: Board, port: str | None = None, *, timeout: float | None = None, unique: bool = False
+    ) -> Device:
+        seen.append(unique)
+        return Device("/dev/cu.usbmodem2101", "esp32c6", None)
+
+    monkeypatch.setattr(device, "wait_for", wait_for)
+    runner.Session(cfg, runner.Options(repo=tmp_path, unique_board=unique))._device_for(scenario)
+
+    assert seen == [unique]
+
+
+def test_unique_board_defaults_to_off() -> None:
+    assert runner.Options(repo=Path(".")).unique_board is False
+
+
+@pytest.mark.parametrize("timeout", [None, 7.5])
+def test_detect_timeout_reaches_wait_for_usb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout: float | None
+) -> None:
+    board = Board("avr", "atmega328p", "Nano", detect=False, usb_id="0403:6001")
+    scenario = Scenario("chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "c")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"avr": board}, (scenario,))
+    seen: list[float | None] = []
+
+    def wait_for_usb(b: Board, *, timeout: float | None = None) -> Device:
+        seen.append(timeout)
+        return Device("/dev/cu.usbserial-1", "atmega328p", None)
+
+    monkeypatch.setattr(device, "wait_for_usb", wait_for_usb)
+    opts = runner.Options(repo=tmp_path, detect_timeout=timeout)
+    runner.Session(cfg, opts)._device_for(scenario)
+
+    assert seen == [timeout]
+
+
 def test_serial_settings_come_from_the_board(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1058,7 +1211,9 @@ def test_undetected_board_with_usb_id_is_found_without_port(
     scenario = Scenario("chk", board, ("ex",), (Step(say="look", confirm="ok?"),), tmp_path / "c")
     cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"avr": board}, (scenario,))
     monkeypatch.setattr(
-        device, "wait_for_usb", lambda b: Device("/dev/cu.usbserial-AQ01L7M0", "atmega328p", None)
+        device,
+        "wait_for_usb",
+        lambda b, timeout=None: Device("/dev/cu.usbserial-AQ01L7M0", "atmega328p", None),
     )
     session = runner.Session(cfg, runner.Options(repo=tmp_path))
     assert session._device_for(scenario).port == "/dev/cu.usbserial-AQ01L7M0"
@@ -1082,7 +1237,7 @@ def _usb_bus(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Both Nanos attached; returns the serial numbers `wait_for_usb` was asked for."""
     asked: list[str] = []
 
-    def wait_for_usb(board: Board) -> Device:
+    def wait_for_usb(board: Board, timeout: float | None = None) -> Device:
         assert board.usb_serial is not None
         asked.append(board.usb_serial)
         return Device(NANO_PORTS[board.usb_serial], "atmega328p", None)
@@ -1125,7 +1280,9 @@ def test_a_cached_usb_port_is_dropped_once_a_second_board_matches(
     cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"avr": board}, (scenario,))
     attached = ["/dev/cu.wchusbserial-a"]
 
-    def wait_for_usb(b: Board) -> Device:  # the real rule: exactly one match
+    def wait_for_usb(
+        b: Board, timeout: float | None = None
+    ) -> Device:  # the real rule: exactly one match
         if len(attached) > 1:
             raise device.PortRequired("2 ports match USB 1a86:7523")
         return Device(attached[0], "atmega328p", None)
@@ -1158,7 +1315,11 @@ def test_a_detected_board_does_not_inherit_an_undetected_boards_port(
     cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"c6": board}, (scenario,))
     monkeypatch.setattr("rustyfarian_bench.runner.os.path.exists", lambda p: True)
     monkeypatch.setattr(
-        device, "wait_for", lambda b, port: Device("/dev/cu.usbmodem2101", "esp32c6", "f0:f5")
+        device,
+        "wait_for",
+        lambda b, port, timeout=None, unique=False: Device(
+            "/dev/cu.usbmodem2101", "esp32c6", "f0:f5"
+        ),
     )
     session = runner.Session(cfg, runner.Options(repo=tmp_path))
     session.device = Device("/dev/cu.usbserial-1", "esp32c6", None)  # taken from --port

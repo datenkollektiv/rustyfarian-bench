@@ -1084,3 +1084,50 @@ def test_a_placeholder_nested_in_a_hook_format_spec_is_rejected(
 def test_a_plain_format_spec_or_conversion_still_loads(tmp_path: Path, key: str) -> None:
     for value in ("{port:>5}", "{ip!r}"):
         load_scenario(tmp_path, 'examples = ["x"]\n' + _nested_step(key, value))
+
+
+def test_an_image_command_is_optional_and_defaults_to_empty(tmp_path: Path) -> None:
+    cfg = load_scenario(tmp_path, scenario('expect = "a"'))
+    board = cfg.boards["s3"]
+    assert cfg.image == ()
+    assert board.image == ()
+    assert cfg.image_for(board) == ()
+
+
+def test_the_global_image_command_is_read_and_a_board_one_overrides_it(tmp_path: Path) -> None:
+    glob = BENCH.replace(
+        "[boards.s3]", 'image = ["just", "image", "{example}", "{image}"]\n\n[boards.s3]'
+    )
+    cfg = load_scenario(tmp_path, scenario('expect = "a"'), glob)
+    assert cfg.image == ("just", "image", "{example}", "{image}")
+    assert cfg.image_for(cfg.boards["s3"]) == cfg.image
+
+    over = glob + 'image = ["just", "image-s3", "{image}"]\n'
+    cfg = load_scenario(tmp_path, scenario('expect = "a"'), over)
+    assert cfg.boards["s3"].image == ("just", "image-s3", "{image}")
+    assert cfg.image_for(cfg.boards["s3"]) == ("just", "image-s3", "{image}")
+
+
+@pytest.mark.parametrize(
+    ("line", "field"),
+    [
+        ('image = ["just", "{port}"]', "commands.image"),
+        ('image = ["just", "{chip}"]', "commands.image"),
+        ('image = ["just", "{image"]', "commands.image"),
+        ("image = []", "commands.image"),
+    ],
+)
+def test_global_image_placeholders_are_validated_at_load(
+    tmp_path: Path, line: str, field: str
+) -> None:
+    bench = BENCH.replace("[boards.s3]", f"{line}\n\n[boards.s3]")
+    with pytest.raises(ConfigError, match=field):
+        load_scenario(tmp_path, scenario('expect = "a"'), bench)
+
+
+@pytest.mark.parametrize(
+    "line", ['image = ["just", "{port}"]', 'image = ["just", "{board}"]', "image = []"]
+)
+def test_board_image_placeholders_are_validated_at_load(tmp_path: Path, line: str) -> None:
+    with pytest.raises(ConfigError, match=r"s3\.image"):
+        load_scenario(tmp_path, scenario('expect = "a"'), BENCH + line + "\n")
