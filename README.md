@@ -45,6 +45,7 @@ From a consumer repo (e.g. `rustyfarian-peripherals`):
 just bench hal_s3_b3f     # one example, then offers the scenario's next examples
 just bench s3/rotary      # one check on one board
 just bench s3             # every check for a board
+just bench hal_s3_b3f --no-twins   # only the named example, not its twins
 ```
 
 From this repo, against a sibling checkout:
@@ -67,7 +68,9 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
 
 1. Build the example (`commands.build`, or the board's own `build`), so the slow part runs before the board is needed.
 2. Poll serial ports and run `espflash board-info` on each until the board's chip (and optional MAC) answers; a port another session holds is skipped, so two boards can bench side by side (pin `mac` when two boards share a chip: the lock is only held while a session reads its port).
+   `run --unique-board` refuses to guess instead: with two boards of the board's chip attached and no `mac` or `--port`, the run ends with an `error` naming both ports, and a busy or silent port blocks the decision until it resolves or `--detect-timeout` ends it.
    A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash; it is found by its USB identity when it declares `usb_id = "vid:pid"` (plus `usb_serial` to tell two identical bridges apart), else it needs `--port` (a lone attached port is no proof of which board it is), and the run stops without it.
+   `run --detect-timeout SECONDS` ends the wait for a missing board with an `error` after that long (no probe starts after the limit, though a running probe may overrun it); without it the run waits for a plug-in.
 3. Flash (`commands.flash`, or the board's own `flash`, with `{port}`).
 4. Open the port exclusively, clearing RTS before DTR so the open itself does not reset an ESP (USB Serial/JTAG or the usual RTS/DTR auto-reset circuit); on a `reset = "dtr"` board the reader raises DTR only for its reset pulse, though the OS or driver may still toggle the lines while opening. Then reset into the app, and read it with pyserial, reopening across USB re-enumeration. The reset is an RTS pulse (esptool's USB-JTAG sequence) by default; `reset = "dtr"` pulses DTR for auto-reset bridges (Arduino Nano, CH340/FT232) and `"none"` skips the pulse but keeps the ESP-safe open, whose brief DTR high can still reset a DTR auto-reset board (use `"dtr"` for those); `baud` is per board. Every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
 5. Run the steps; each step waits for Enter and drops the backlog before its clock starts (`arm = false` for a step that must read what the reset printed, e.g. the banner); a failed step offers a retry, then asks what the operator saw and records it as the step's `note`.
@@ -99,6 +102,7 @@ bench/
 [commands]
 build = ["just", "build-example", "{example}"]
 flash = ["just", "flash", "{example}", "{port}"]
+image = ["just", "save-image", "{example}", "{image}"]   # optional: only `submit` runs it
 
 [boards.s3]
 chip = "esp32s3"
@@ -116,6 +120,10 @@ reset = "dtr"                                    # auto-reset bridge; default "r
 build = ["just", "build-avr-bin", "{example}"]  # per-board commands override [commands]
 flash = ["just", "flash-avr-bin", "{example}", "{port}"]
 ```
+
+`image` is optional and consumer-owned, like `build` and `flash`.
+It writes the flash image `submit` uploads (the whole flash from `0x0`: bootloader, partition table and app) to `{image}`; a board's own `image` overrides `[commands]`.
+It may use `{example}` and `{image}`, and `run` never runs it.
 
 A scenario:
 
@@ -274,12 +282,77 @@ The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s; none w
 | `pass`       | every required step was observed and passed                                                      |
 | `fail`       | a step failed, or the run stopped before the last step                                           |
 | `unverified` | nothing failed, but a required `confirm` was skipped by `--yes`                                  |
-| `error`      | the run broke (missing tool, crash); the detail names the cause; a missing tool ends the session |
+| `error`      | the run broke (missing tool, no board within `--detect-timeout`, crash); the detail names the cause; a missing tool or board ends the session |
 | `aborted`    | Ctrl-C; the session ends, later examples do not start                                            |
 | `skipped`    | the operator declined a requested example; makes the run incomplete                              |
 
 `run` exits 0 when every example passed and 3 when the only shortfall is `unverified` or skipped work.
 It exits 1 on any fail, error or abort, 2 on a bench definition error, and 130 on Ctrl-C between examples.
+
+## Remote bench
+
+A shared host with the boards attached (e.g. a Raspberry Pi) runs checks for clients that see no USB, such as a devcontainer.
+`submit` builds locally and uploads an image and the scenario; `serve` flashes, judges and stores the result.
+
+On the host:
+
+```sh
+uv tool install 'rustyfarian-bench[serve] @ git+https://github.com/datenkollektiv/rustyfarian-bench'
+rustyfarian-bench serve --host 0.0.0.0 --outbox /srv/bench/outbox
+```
+
+The host needs `espflash`, a uv-managed Python ≥ 3.12 and a user in the `dialout` group.
+`serve` listens on `127.0.0.1:8000` by default; `--host 0.0.0.0` opens it to the network, and `--job-timeout` (default 600 s) ends a job that runs too long.
+`--detect-timeout` (default 30 s) fails a job whose board is not attached in that time, so the worker is free for the next job.
+Without the `serve` extra, `serve` prints the install hint and exits 2.
+From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just submit <repo> <board> <example> --bench URL` sends a sibling repo's check to it.
+
+From the client, in a consumer repo whose `bench.toml` has an `image` command:
+
+```sh
+rustyfarian-bench --repo . submit s3 hal_s3_b3f --bench http://pi.local:8000 --wait
+```
+
+`submit <board> <example> --bench URL` builds (`--no-build` skips it), runs the `image` command, uploads and prints the job id.
+`--image PATH` uploads that file instead and skips both commands; `--check NAME` picks a check when several list the example.
+Without `--wait`, `submit` returns at once and the job runs on; with it, `submit` polls the log once a second and exits like `run`.
+Ctrl-C while waiting leaves the job running and exits 130; an unreachable host exits 2.
+
+One worker runs the jobs of the whole host one at a time, in arrival order, so a probe can never touch a board mid-flash.
+Each job runs the unchanged `run <example> --unattended --no-build --no-twins --detect-timeout N --unique-board` as a child process in a repo the server writes itself.
+The board is found by chip detection, and a `mac` in the client's board table is carried and pinned in that repo.
+An unpinned job refuses to guess between boards of the same chip, so with two attached it ends as `error` naming both ports; a silent stray port also blocks an unpinned job until `--detect-timeout`.
+The `mac` must have the form `aa:bb:cc:dd:ee:ff`; `submit` rejects a malformed one before it builds, and `serve` answers 422.
+The flash is `espflash write-bin` of the image at `0x0`, so nothing from the client's `bench.toml` runs on the host except the scenario's steps.
+
+A scenario is refused, by `submit` before it builds and by `serve` again on arrival, when it has:
+- `setup` or `teardown` commands;
+- a `probe` or `run` on a step an unattended run reaches;
+- a board with `detect = false`;
+- no unattended step.
+
+An attended-only step may keep its `probe` or `run`: it is not run remotely.
+The remote run is unattended, so a verdict from it is never a full pass; the attended steps still need `--attended` on the bench.
+
+Every job is kept in `outbox/<id>/`, the id being `YYYYmmdd-HHMMSS-<hex>` in UTC:
+
+```
+outbox/20261112-093000-a1b2c3/
+├── job.json       status, board, example, verdict, detail, exit code
+├── image.bin      the uploaded image
+├── scenario.toml  the uploaded scenario
+├── bench/         the repo the child ran in, with logs/ and results.jsonl
+├── run.log        the child's output
+└── result.json    verdict, detail, exit code and the result rows
+```
+
+`GET /jobs/<id>?offset=N` returns the job and the log from byte `N`; `POST /jobs` takes a JSON body with the scenario and the base64 image.
+`submit --wait` exits 0 on `pass`, 3 on `unverified` or `incomplete`, and 1 on anything else, as `run` does.
+A job keeps the recorded verdict only when `run`'s exit code agrees with it; otherwise it is `error`.
+A job a restart interrupted ends as `error`; killing `serve` with SIGKILL can leave a running child flashing.
+
+There is no authentication or TLS, so anyone who reaches the port can flash a board and read every job.
+An image can hold Wi-Fi credentials and `outbox/` is kept forever, so run `serve` only on a trusted network and clear the outbox yourself.
 
 ## Development
 

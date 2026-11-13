@@ -10,6 +10,7 @@ timeline
     title rustyfarian-bench
     section Ready
         Prompt placeholders (feature-doc) : `say` and `confirm` fill in `{mac}`, `{port}`, `{chip}` and captured values such as an IP, so an attended router step names the device
+        Remote bench (feature-doc) : a Pi in the IoT network runs uploaded firmware and scenarios via `serve`, a devcontainer sends them with `submit --wait`; walking skeleton
     section Near term
         Result traceability : results record the consumer git revision, dirty flag and scenario hash
         Prompt placeholders v2 (feature-doc) : board-level variables in `bench.toml` for facts the log never prints, deferred until v1 ran on hardware

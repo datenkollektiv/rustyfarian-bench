@@ -10,12 +10,15 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 
 ## Architecture
 
-- `cli.py` — `run`, `list`, `detect` subcommands (entry point `rustyfarian-bench`).
+- `cli.py` — `run`, `list`, `detect`, `submit`, `serve` subcommands (entry point `rustyfarian-bench`).
 - `config.py` — loads `bench/bench.toml` plus `bench/<board>/*.toml` scenarios.
 - `device.py` — polls serial ports and asks `espflash board-info` which chip answers.
 - `serial_lines.py` — background pyserial reader that reopens the port across USB re-enumeration.
 - `steps.py` — judges `expect` / `duration` / `confirm` steps against the line stream.
 - `runner.py` — one session: build, find board, flash, reset, guide steps, append to `results.jsonl`.
+- `remote.py` — stdlib-only core of the remote bench: job files in `outbox/<id>/`, the refusal boundary, the child-process runner and the single worker.
+- `server.py` — FastAPI app and `serve()` over `remote.py`; imported only with the `serve` extra.
+- `client.py` — `submit`: builds the image, uploads it with the scenario over `urllib` and polls for the verdict.
 
 ## Development Workflow
 

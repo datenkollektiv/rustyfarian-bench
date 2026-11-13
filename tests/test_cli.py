@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 from typing import NoReturn
 
 import pytest
 
-from rustyfarian_bench import cli, config, device, runner
+import rustyfarian_bench
+from rustyfarian_bench import cli, client, config, device, runner
 from rustyfarian_bench.config import BenchConfig
 
 
@@ -108,3 +111,123 @@ def test_unattended_and_attended_are_mutually_exclusive(
 
     assert exc.value.code == 2
     assert seen == []
+
+
+@pytest.mark.parametrize(("flags", "twins"), [([], True), (["--no-twins"], False)])
+def test_no_twins_reaches_the_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], twins: bool
+) -> None:
+    seen = _capture_options(tmp_path, monkeypatch)
+
+    assert cli.main(["--repo", str(tmp_path), "run", "s3", *flags]) == 0
+
+    (opts,) = seen
+    assert opts.twins is twins
+
+
+def _no_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make `from . import server` import afresh, and never start a real server if it works."""
+
+    def never(*a: object, **k: object) -> NoReturn:
+        raise AssertionError("uvicorn must not start in a unit test")
+
+    monkeypatch.setattr("uvicorn.run", never)
+    monkeypatch.delitem(sys.modules, "rustyfarian_bench.server", raising=False)
+    # `from . import server` takes the package attribute first, if an earlier test set it
+    monkeypatch.delattr(rustyfarian_bench, "server", raising=False)
+
+
+def test_serve_without_the_extra_hints_at_it_and_exits_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _no_server(monkeypatch)
+    # A None entry makes `import` raise ModuleNotFoundError, as if the extra were absent.
+    for name in ("fastapi", "uvicorn"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+    assert cli.main(["serve"]) == 2
+    assert "rustyfarian-bench[serve]" in capsys.readouterr().out
+
+
+def test_serve_does_not_hide_a_missing_module_of_our_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only the serve extra's modules turn into the hint; any other import error is a bug.
+    _no_server(monkeypatch)
+    monkeypatch.setitem(sys.modules, "rustyfarian_bench.server", None)
+
+    with pytest.raises(ModuleNotFoundError):
+        cli.main(["serve"])
+
+
+def test_submit_maps_a_missing_tool_to_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(args: object) -> NoReturn:
+        raise device.MissingTool("cannot run 'just'")
+
+    monkeypatch.setattr(client, "cmd_submit", missing)
+
+    argv = ["--repo", str(tmp_path), "submit", "s3", "ex", "--bench", "http://x"]
+    assert cli.main(argv) == 2
+    assert "cannot run 'just'" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"), [([], None), (["--detect-timeout", "12"], 12.0)], ids=["absent", "12"]
+)
+def test_detect_timeout_reaches_the_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], expected: float | None
+) -> None:
+    seen = _capture_options(tmp_path, monkeypatch)
+
+    assert cli.main(["--repo", str(tmp_path), "run", "s3", *flags]) == 0
+
+    (opts,) = seen
+    assert opts.detect_timeout == expected
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"), [([], False), (["--unique-board"], True)], ids=["default", "set"]
+)
+def test_unique_board_reaches_the_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], expected: bool
+) -> None:
+    seen = _capture_options(tmp_path, monkeypatch)
+
+    assert cli.main(["--repo", str(tmp_path), "run", "s3", *flags]) == 0
+
+    (opts,) = seen
+    assert opts.unique_board is expected
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "soon", "nan"])
+def test_run_rejects_a_detect_timeout_that_is_not_a_positive_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    seen = _capture_options(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--repo", str(tmp_path), "run", "s3", "--detect-timeout", bad])
+
+    assert exc.value.code == 2
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"), [([], 30.0), (["--detect-timeout", "5"], 5.0)], ids=["default", "5"]
+)
+def test_serve_passes_the_detect_timeout_to_the_server(
+    monkeypatch: pytest.MonkeyPatch, flags: list[str], expected: float
+) -> None:
+    _no_server(monkeypatch)
+    calls: list[tuple[object, ...]] = []
+    fake = types.ModuleType("rustyfarian_bench.server")
+    fake.serve = lambda *a: calls.append(a)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rustyfarian_bench.server", fake)
+
+    assert cli.main(["serve", *flags]) == 0
+
+    [(host, port, outbox, _job_timeout, detect_timeout)] = calls
+    assert (host, port, outbox) == ("127.0.0.1", 8000, Path("outbox"))
+    assert detect_timeout == expected

@@ -26,6 +26,10 @@ Fix: reset on the already-open pyserial port with RTS high while DTR stays low f
 espflash parses the variable as a clap bool and accepts only `true` or `false`.
 Fix: keep `device.ESPFLASH_ENV` at `"true"`.
 
+**A merged image built from a bare ELF does not boot on the rustyfarian consumers.**
+Their `flash.sh` passes a cached IDF v5.3.3 `--bootloader` and `--ignore-app-descriptor`, while espflash 4.x bundles a v5.5.1 bootloader that fails with "efuse blk rev".
+Fix: let the consumer build the remote image through its own `image` command (`espflash save-image --merge` with the same arguments), never from an ELF path alone.
+
 ---
 
 ## Serial Monitoring
@@ -60,3 +64,19 @@ Fix: treat `PermissionError` like `ProcessLookupError` in every `killpg` call of
 Verbose mode can come from any leading global flag group (`(?i)(?x)` is valid) or a scoped `(?x:...)` that `(?-x:...)` switches off again.
 Python accepts global flag groups only at the very start of a pattern and rejects them anywhere else.
 Fix: scan with `config._scan`, which tracks escapes, classes, comments and the verbose state per group.
+
+---
+
+## Test Infrastructure
+
+**`from . import server` returns the package attribute when one exists, so faking a missing module via `sys.modules` alone does nothing.**
+An earlier test that imported `rustyfarian_bench.server` left `rustyfarian_bench.server` set, so the "extra is absent" test started a real `uvicorn.run` and hung the suite.
+Fix: delete both the `sys.modules` entry and the package attribute, and patch `uvicorn.run` to raise, as `tests/test_cli.py::_no_server` does.
+
+---
+
+## Remote Bench Server
+
+**An `Exception` raised from ASGI middleware while FastAPI reads the request body becomes a 400, not your status code.**
+FastAPI wraps body parsing in `except Exception` and reports any error there as a malformed body.
+Fix: the streamed-size limit raises `server._TooLarge`, a `BaseException`, which `_BodyLimit` turns into a 413.
