@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import sys
 import types
 from pathlib import Path
@@ -10,6 +11,12 @@ import pytest
 import rustyfarian_bench
 from rustyfarian_bench import cli, client, config, device, runner
 from rustyfarian_bench.config import BenchConfig
+
+
+@pytest.fixture(autouse=True)
+def no_bench_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The developer's own shell must not decide whether `--bench` is required."""
+    monkeypatch.delenv(client.URL_ENV, raising=False)
 
 
 @pytest.mark.parametrize(
@@ -223,7 +230,7 @@ def test_serve_passes_the_detect_timeout_to_the_server(
     _no_server(monkeypatch)
     calls: list[tuple[object, ...]] = []
     fake = types.ModuleType("rustyfarian_bench.server")
-    fake.serve = lambda *a: calls.append(a)  # type: ignore[attr-defined]
+    fake.serve = lambda *a, **kw: calls.append(a)  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "rustyfarian_bench.server", fake)
 
     assert cli.main(["serve", *flags]) == 0
@@ -231,3 +238,113 @@ def test_serve_passes_the_detect_timeout_to_the_server(
     [(host, port, outbox, _job_timeout, detect_timeout)] = calls
     assert (host, port, outbox) == ("127.0.0.1", 8000, Path("outbox"))
     assert detect_timeout == expected
+
+
+def _fake_serve(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    _no_server(monkeypatch)
+    calls: list[dict[str, object]] = []
+    fake = types.ModuleType("rustyfarian_bench.server")
+    fake.serve = lambda *a, **kw: calls.append(kw)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rustyfarian_bench.server", fake)
+    return calls
+
+
+def test_serve_passes_the_token_file_and_the_tls_files_to_the_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _fake_serve(monkeypatch)
+    flags = ["--host", "0.0.0.0", "--token-file", "t.toml"]
+    flags += ["--ssl-certfile", "c.pem", "--ssl-keyfile", "k.pem"]
+
+    assert cli.main(["serve", *flags]) == 0
+
+    [kw] = calls
+    assert kw == {
+        "token_file": Path("t.toml"),
+        "ssl_certfile": Path("c.pem"),
+        "ssl_keyfile": Path("k.pem"),
+    }
+
+
+def test_serve_without_the_flags_passes_none_for_each(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _fake_serve(monkeypatch)
+
+    assert cli.main(["serve"]) == 0
+
+    [kw] = calls
+    assert kw == {"token_file": None, "ssl_certfile": None, "ssl_keyfile": None}
+
+
+def test_serve_refusing_to_start_is_exit_2_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _no_server(monkeypatch)
+    fake = types.ModuleType("rustyfarian_bench.server")
+
+    def refuse(*a: object, **kw: object) -> NoReturn:
+        raise config.ConfigError("serving on 0.0.0.0 needs --token-file")
+
+    fake.serve = refuse  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rustyfarian_bench.server", fake)
+
+    assert cli.main(["serve", "--host", "0.0.0.0"]) == 2
+    assert "--token-file" in capsys.readouterr().out
+
+
+def _capture_submit(monkeypatch: pytest.MonkeyPatch) -> list[argparse.Namespace]:
+    seen: list[argparse.Namespace] = []
+
+    def grab(args: argparse.Namespace) -> int:
+        seen.append(args)
+        return 0
+
+    monkeypatch.setattr(client, "cmd_submit", grab)
+    return seen
+
+
+def test_submit_takes_the_bench_url_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _capture_submit(monkeypatch)
+    monkeypatch.setenv("RUSTYFARIAN_BENCH_URL", "https://bench.example.net:8443")
+
+    assert cli.main(["--repo", str(tmp_path), "submit", "s3", "ex"]) == 0
+
+    [args] = seen
+    assert args.bench == "https://bench.example.net:8443"
+
+
+def test_a_bench_flag_wins_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _capture_submit(monkeypatch)
+    monkeypatch.setenv("RUSTYFARIAN_BENCH_URL", "https://bench.example.net:8443")
+
+    argv = ["--repo", str(tmp_path), "submit", "s3", "ex", "--bench", "http://127.0.0.1:8000"]
+    assert cli.main(argv) == 0
+
+    [args] = seen
+    assert args.bench == "http://127.0.0.1:8000"
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
+def test_submit_without_a_bench_url_anywhere_names_both_ways(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str | None,
+) -> None:
+    seen = _capture_submit(monkeypatch)
+    if value is None:
+        monkeypatch.delenv("RUSTYFARIAN_BENCH_URL", raising=False)
+    else:
+        monkeypatch.setenv("RUSTYFARIAN_BENCH_URL", value)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--repo", str(tmp_path), "submit", "s3", "ex"])
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--bench" in err
+    assert "RUSTYFARIAN_BENCH_URL" in err
+    assert seen == []

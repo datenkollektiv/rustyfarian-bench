@@ -9,6 +9,8 @@ import argparse
 import base64
 import http.client
 import json
+import os
+import ssl
 import sys
 import tempfile
 import time
@@ -16,6 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import config, remote, runner, ui
 from .config import ConfigError, Scenario
@@ -23,6 +26,10 @@ from .config import ConfigError, Scenario
 POLL_INTERVAL = 1.0
 POST_TIMEOUT = 120.0  # an upload of a whole image
 GET_TIMEOUT = 30.0
+# The environment carries what a devcontainer gets through `remoteEnv`; "" counts as unset.
+URL_ENV = "RUSTYFARIAN_BENCH_URL"  # the bench's base URL, the default for --bench
+TOKEN_ENV = "RUSTYFARIAN_BENCH_TOKEN"  # the bearer token
+CA_ENV = "RUSTYFARIAN_BENCH_CA"  # a PEM file with the CA that signed the bench's certificate
 
 
 class RemoteError(RuntimeError):
@@ -64,19 +71,55 @@ def _build_image(
             raise BuildError(f"the image command wrote no file at {path}") from None
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Verifying TLS, trusting the system CAs or, with `CA_ENV` set, that PEM file alone."""
+    cafile = os.environ.get(CA_ENV) or None
+    try:
+        return ssl.create_default_context(cafile=cafile)
+    except OSError as e:  # ssl.SSLError included
+        raise ConfigError(f"${CA_ENV}={cafile}: {e.strerror or e}") from None
+
+
+def _token() -> str | None:
+    """The bearer token from `TOKEN_ENV`, `""` counting as unset; the error never shows it."""
+    token = os.environ.get(TOKEN_ENV) or None
+    if token is not None and not (token.isascii() and token.isprintable()):
+        # http.client would reject a CR or LF quoting the whole header, token and all
+        raise ConfigError(
+            f"${TOKEN_ENV}: expected printable ASCII; look for a stray newline or carriage return"
+        )
+    return token
+
+
+def _opener(url: str, context: ssl.SSLContext) -> urllib.request.OpenerDirector:
+    """Verifying TLS with `context`; a loopback URL skips any proxy, which would see the token."""
+    host = urlsplit(url).hostname or ""
+    direct: list[urllib.request.BaseHandler] = (
+        [urllib.request.ProxyHandler({})] if remote.loopback(host) else []
+    )
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), *direct)
+
+
 def _request(url: str, body: dict[str, Any] | None, timeout: float) -> dict[str, Any]:
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"} if data else {}
-    )
+    headers = {"Content-Type": "application/json"} if data else {}
+    req = urllib.request.Request(url, data=data, headers=headers)
+    if token := _token():
+        # unredirected: urllib would copy a plain header onto a redirect to any host or scheme
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _opener(url, _ssl_context()).open(req, timeout=timeout) as resp:
             reply = json.load(resp)
     except urllib.error.HTTPError as e:
-        raise RemoteError(f"{url}: {e.code} {_detail(e)}") from None
+        hint = f"; set ${TOKEN_ENV} to a token the bench knows" if e.code == 401 else ""
+        raise RemoteError(f"{url}: {e.code} {_detail(e)}{hint}") from None
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         # unreachable, timeout, bad JSON, a reply cut short
-        raise RemoteError(f"{url}: {getattr(e, 'reason', e)}") from None
+        reason = getattr(e, "reason", e)
+        hint = ""
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            hint = f"; point ${CA_ENV} at the CA that signed the bench's certificate"
+        raise RemoteError(f"{url}: {reason}{hint}") from None
     if not isinstance(reply, dict):
         raise RemoteError(f"{url}: unexpected reply")
     return reply
@@ -126,6 +169,12 @@ def _submit(args: argparse.Namespace) -> int:
     base = args.bench.rstrip("/")
     if not base.startswith(("http://", "https://")):
         raise ConfigError(f"--bench {args.bench!r}: expected an http:// or https:// URL")
+    host = urlsplit(base).hostname or ""
+    if _token() and base.startswith("http://") and not remote.loopback(host):
+        raise ConfigError(
+            f"--bench {base}: a token travels only over https:// (or to loopback through a "
+            f"tunnel); unset ${TOKEN_ENV} for an open bench"
+        )
     cfg = config.load(args.repo)
     scenario = _select(cfg, args.board, args.example, args.check)
     if reasons := remote.remote_violations(scenario):

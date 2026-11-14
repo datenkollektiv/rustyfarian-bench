@@ -9,6 +9,7 @@ unchanged `run` command then runs as a child process in that directory, its outp
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import os
 import queue
@@ -18,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -54,6 +56,7 @@ CHIPS = frozenset(
 )
 NAME_MAX = 80
 MAX_BAUD = 4_000_000  # far above any ESP32 console rate
+TOKEN_MIN = 32  # characters; `openssl rand -hex 32` gives 64
 
 QUEUED, RUNNING, DONE = "queued", "running", "done"
 RESTARTED = "server restarted before the job finished"
@@ -97,6 +100,7 @@ class Job:
     verdict: str | None = None
     detail: str = ""
     exit_code: int | None = None
+    submitter: str = ""  # the token's name; a default, so a job.json from before it still loads
 
 
 def _now() -> str:
@@ -113,22 +117,39 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def contained(base: Path, *parts: str) -> Path:
+    """`base/parts` with symlinks resolved; ConfigError if it is not strictly inside `base`."""
+    root = os.path.realpath(base)
+    full = os.path.realpath(os.path.join(root, *parts))
+    if not full.startswith(os.path.join(root, "")):  # root + separator, also for "/"
+        raise ConfigError("path escapes its directory")
+    return Path(full)
+
+
+def job_path(outbox: Path, job_id: str) -> Path:
+    """`outbox/<job_id>`; ConfigError for a malformed id or one that leaves the outbox."""
+    if not JOB_ID.fullmatch(job_id):
+        raise ConfigError(f"bad job id: {job_id!r}")
+    return contained(outbox, job_id)
+
+
 def write_job(job_dir: Path, job: Job) -> None:
     _atomic_write(job_dir / "job.json", json.dumps(asdict(job)))
 
 
 def _load(job_dir: Path) -> Job | None:
     try:
-        return Job(**json.loads((job_dir / "job.json").read_text(encoding="utf-8")))
-    except (OSError, ValueError, TypeError):
+        return Job(**json.loads(contained(job_dir, "job.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError, ConfigError):
         return None
 
 
 def read_job(outbox: Path, job_id: str) -> Job | None:
     """The job `job_id`, or None for an id that is malformed, unknown or unreadable."""
-    if not JOB_ID.fullmatch(job_id):
+    try:
+        return _load(job_path(outbox, job_id))
+    except ConfigError:
         return None
-    return _load(outbox / job_id)
 
 
 def _quoted(text: str) -> str:
@@ -189,12 +210,51 @@ def _check_board(raw: Mapping[str, Any]) -> dict[str, Any]:
     return checked
 
 
-def create_job(outbox: Path, meta: Mapping[str, Any], scenario_toml: str, image: bytes) -> Job:
+def loopback(host: str) -> bool:
+    """Whether `host` (a name or address, no port) can only be this machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def load_tokens(path: Path) -> dict[str, str]:
+    """The bearer tokens `serve` accepts, token to name, from a TOML file of `name = "token"`.
+
+    ConfigError for a file that is missing, malformed or holds a token twice; the message
+    never carries a token.
+    """
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        raise ConfigError(f"{path}: {e}") from None
+    tokens: dict[str, str] = {}
+    for name, token in raw.items():
+        _check_name(name, f"{path}: token name {name!r}")
+        if not isinstance(token, str):
+            raise ConfigError(f"{path}: token {name}: expected a string")
+        if len(token) < TOKEN_MIN:
+            raise ConfigError(f"{path}: token {name}: expected at least {TOKEN_MIN} characters")
+        if not token.isascii():  # a header carries it, and clients encode the rest differently
+            raise ConfigError(f"{path}: token {name}: expected ASCII characters only")
+        if token in tokens:
+            raise ConfigError(f"{path}: token {name}: the same token appears twice")
+        tokens[token] = name
+    if not tokens:
+        raise ConfigError(f"{path}: no tokens")
+    return tokens
+
+
+def create_job(
+    outbox: Path, meta: Mapping[str, Any], scenario_toml: str, image: bytes, submitter: str = ""
+) -> Job:
     """Validate an upload and lay it out as `outbox/<id>/`; the job is queued, not started.
 
-    `meta` holds `board` (key, chip, name, baud, reset, optional mac), `check` and `example`.
-    Anything the runner would not take, or `remote_violations` refuses, raises ConfigError and
-    leaves no directory behind.
+    `meta` holds `board` (key, chip, name, baud, reset, optional mac), `check` and `example`;
+    `submitter` is the name of the token that sent it. Anything the runner would not take, or
+    `remote_violations` refuses, raises ConfigError and leaves no directory behind.
     """
     board = _check_board(meta.get("board") or {})
     check = _check_name(meta.get("check"), "check")
@@ -208,6 +268,7 @@ def create_job(outbox: Path, meta: Mapping[str, Any], scenario_toml: str, image:
         check=check,
         example=example,
         created=_now(),
+        submitter=submitter,
     )
     job_dir = _make_job_dir(outbox, job)
     try:
@@ -220,7 +281,7 @@ def create_job(outbox: Path, meta: Mapping[str, Any], scenario_toml: str, image:
         if isinstance(e, RecursionError):
             raise ConfigError("scenario: nested too deeply") from None
         if isinstance(e, ConfigError):  # the reply must not reveal where the outbox lives
-            shown = str(e).replace(str(job_dir.resolve()), "<job>").replace(str(job_dir), "<job>")
+            shown = str(e).replace(str(job_dir), "<job>")  # job_dir is already resolved
             raise ConfigError(shown) from None
         raise
     return job
@@ -229,7 +290,7 @@ def create_job(outbox: Path, meta: Mapping[str, Any], scenario_toml: str, image:
 def _make_job_dir(outbox: Path, job: Job) -> Path:
     """Create `outbox/<id>/`; a same-second id collision gets a fresh id."""
     for _ in range(5):
-        job_dir = outbox / job.id
+        job_dir = job_path(outbox, job.id)
         try:
             job_dir.mkdir(parents=True)
         except FileExistsError:
@@ -245,9 +306,10 @@ def _populate(
     (job_dir / "image.bin").write_bytes(image)
     (job_dir / "scenario.toml").write_text(scenario, encoding="utf-8")
     bench = job_dir / "bench"
-    (bench / board["key"]).mkdir(parents=True)
+    key_dir = contained(bench, board["key"])
+    key_dir.mkdir(parents=True)
     (bench / "bench.toml").write_text(bench_toml(board), encoding="utf-8")
-    (bench / board["key"] / f"{check}.toml").write_text(scenario, encoding="utf-8")
+    contained(key_dir, f"{check}.toml").write_text(scenario, encoding="utf-8")
     cfg = config.load(job_dir)
     if len(cfg.scenarios) != 1:
         raise ConfigError(f"expected exactly one scenario, found {len(cfg.scenarios)}")
@@ -378,8 +440,12 @@ def recover(outbox: Path) -> None:
     """At server start, close the jobs a previous server left queued or running."""
     if not outbox.is_dir():
         return
-    for job_dir in sorted(outbox.iterdir()):
-        job = _load(job_dir) if JOB_ID.fullmatch(job_dir.name) else None
+    for entry in sorted(outbox.iterdir()):
+        try:
+            job_dir = job_path(outbox, entry.name)
+        except ConfigError:
+            continue
+        job = _load(job_dir)
         if job is not None and job.status != DONE:
             with contextlib.suppress(OSError):
                 _finish(job_dir, job, "error", RESTARTED, None)

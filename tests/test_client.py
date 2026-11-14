@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import base64
 import http.client
+import http.server
 import io
 import json
+import ssl
+import threading
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
@@ -24,7 +27,15 @@ from fastapi.testclient import TestClient
 
 from rustyfarian_bench import cli, client, device, remote, runner, server
 
-from .test_remote import IMAGE, SCENARIO, child
+from .test_remote import IMAGE, SCENARIO, TOKEN, child
+
+
+@pytest.fixture(autouse=True)
+def no_bench_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The developer's own shell must not leak a bench URL, token or CA into the tests."""
+    for name in (client.URL_ENV, client.TOKEN_ENV, client.CA_ENV):
+        monkeypatch.delenv(name, raising=False)
+
 
 BENCH = """\
 [commands]
@@ -374,19 +385,56 @@ def test_ctrl_c_while_waiting_says_the_job_keeps_running(
 # -- the network -------------------------------------------------------------------------------
 
 
+class FakeOpener:
+    """Stands in for an `OpenerDirector`: `open` hands the request to `fake` with the context."""
+
+    def __init__(self, fake: Callable[..., Any], context: ssl.SSLContext):
+        self.fake = fake
+        self.context = context
+
+    def open(self, req: urllib.request.Request, timeout: float) -> Any:
+        return self.fake(req, timeout, self.context)
+
+
+def fake_urlopen(monkeypatch: pytest.MonkeyPatch, fake: Callable[..., Any]) -> None:
+    """Route every `client._request` to `fake(req, timeout, context)`, no socket."""
+    monkeypatch.setattr(
+        client, "_opener", lambda url, context: FakeOpener(fake, context), raising=True
+    )
+
+
 def test_an_unreachable_host_is_exit_2(
     tmp_path: Path,
     commands: Commands,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def refuse(req: object, timeout: float) -> NoReturn:
+    def refuse(req: object, timeout: float, context: object = None) -> NoReturn:
         raise urllib.error.URLError(ConnectionRefusedError("refused"))
 
-    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    fake_urlopen(monkeypatch, refuse)
 
     assert submit(repo(tmp_path)) == 2
     assert "refused" in capsys.readouterr().out
+
+
+def test_a_certificate_the_client_does_not_trust_is_exit_2_naming_the_ca_variable(
+    tmp_path: Path,
+    commands: Commands,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def distrust(req: object, timeout: float, context: object = None) -> NoReturn:
+        reason = ssl.SSLCertVerificationError(1, "certificate verify failed: self-signed")
+        raise urllib.error.URLError(reason)
+
+    fake_urlopen(monkeypatch, distrust)
+
+    assert submit(repo(tmp_path)) == 2
+
+    out = capsys.readouterr().out
+    assert "certificate verify failed" in out
+    assert client.CA_ENV in out
 
 
 def test_a_server_that_goes_away_while_waiting_is_exit_2(
@@ -396,12 +444,12 @@ def test_a_server_that_goes_away_while_waiting_is_exit_2(
 ) -> None:
     replies = [{"id": JOB}]
 
-    def flaky(req: urllib.request.Request, timeout: float) -> Reply:
+    def flaky(req: urllib.request.Request, timeout: float, context: object = None) -> Reply:
         if not replies:
             raise urllib.error.URLError("connection reset")
         return Reply(json.dumps(replies.pop()).encode())
 
-    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    fake_urlopen(monkeypatch, flaky)
     monkeypatch.setattr(client, "POLL_INTERVAL", 0.001)
 
     assert submit(repo(tmp_path), "--wait") == 2
@@ -410,16 +458,16 @@ def test_a_server_that_goes_away_while_waiting_is_exit_2(
 def test_a_reply_cut_short_is_exit_2(
     tmp_path: Path, commands: Commands, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def cut(req: object, timeout: float) -> NoReturn:
+    def cut(req: object, timeout: float, context: object = None) -> NoReturn:
         raise http.client.IncompleteRead(b"{", 10)
 
-    monkeypatch.setattr(urllib.request, "urlopen", cut)
+    fake_urlopen(monkeypatch, cut)
 
     assert submit(repo(tmp_path)) == 2
 
 
 class Reply:
-    """What `urlopen` returns: a context manager with a readable body."""
+    """What an opener returns: a context manager with a readable body."""
 
     def __init__(self, data: bytes):
         self.data = io.BytesIO(data)
@@ -440,21 +488,28 @@ class Reply:
 
 
 class Bridge:
-    """A `urlopen` that hands each request to a TestClient: the whole wire, minus the socket."""
+    """A fake opener that hands each request to a TestClient: the whole wire, minus the socket."""
 
     def __init__(self, app: TestClient):
         self.app = app
         self.requests: list[tuple[str, str]] = []
+        self.auth: list[str | None] = []  # the Authorization header of each request
+        self.contexts: list[object] = []  # what the opener got as `context`
 
-    def __call__(self, req: urllib.request.Request, timeout: float) -> Reply:
+    def __call__(
+        self, req: urllib.request.Request, timeout: float, context: object = None
+    ) -> Reply:
         parts = urlsplit(req.full_url)
         target = parts.path + (f"?{parts.query}" if parts.query else "")
         self.requests.append((req.get_method(), target))
+        self.auth.append(req.get_header("Authorization"))
+        self.contexts.append(context)
+        headers = dict(req.header_items())
         if req.data is None:
-            resp = self.app.get(target)
+            resp = self.app.get(target, headers=headers)
         else:
             assert isinstance(req.data, bytes)
-            resp = self.app.post(target, content=req.data, headers=dict(req.header_items()))
+            resp = self.app.post(target, content=req.data, headers=headers)
         if resp.status_code >= 400:
             raise urllib.error.HTTPError(
                 req.full_url,
@@ -473,7 +528,7 @@ def bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Bridge]:
     app = server.create_app(outbox, runner=partial(remote.run_job, timeout=30, argv=argv))
     with TestClient(app) as c:
         b = Bridge(c)
-        monkeypatch.setattr(urllib.request, "urlopen", b)
+        fake_urlopen(monkeypatch, b)
         monkeypatch.setattr(client, "POLL_INTERVAL", 0.01)
         yield b
 
@@ -514,3 +569,361 @@ def test_the_server_refusing_an_upload_is_exit_2_with_its_reason(
 
     assert "422" in capsys.readouterr().out
     assert list((tmp_path / "outbox").iterdir()) == []
+
+
+# -- the token, the CA and the transport ------------------------------------------------------
+
+
+@pytest.fixture
+def guarded_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Bridge]:
+    """A bridge to an app that wants a bearer token."""
+    token_file = tmp_path / "tokens.toml"
+    token_file.write_text(f'fluffi-mbp = "{TOKEN}"\n')
+    argv = child("pass", "all good")
+    runner_ = partial(remote.run_job, timeout=30, argv=argv)
+    app = server.create_app(tmp_path / "outbox", runner=runner_, token_file=token_file)
+    with TestClient(app) as c:
+        b = Bridge(c)
+        fake_urlopen(monkeypatch, b)
+        monkeypatch.setattr(client, "POLL_INTERVAL", 0.01)
+        yield b
+
+
+def image_file(tmp_path: Path) -> Path:
+    mine = tmp_path / "mine.bin"
+    mine.write_bytes(IMAGE)
+    return mine
+
+
+def test_the_token_from_the_environment_opens_a_guarded_bench_end_to_end(
+    tmp_path: Path,
+    guarded_bridge: Bridge,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(client.TOKEN_ENV, TOKEN)
+    argv = ["--repo", str(repo(tmp_path)), "submit", "c6", "ex1"]
+    argv += ["--bench", "http://127.0.0.1:8000", "--image", str(image_file(tmp_path)), "--wait"]
+
+    code = cli.main(argv)  # loopback, as through an ssh tunnel; the bridge ignores the host
+
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "pass: all good" in out
+    # the header rides on the upload and on every poll
+    assert len(guarded_bridge.auth) > 1
+    assert set(guarded_bridge.auth) == {f"Bearer {TOKEN}"}
+    (job_dir,) = (tmp_path / "outbox").iterdir()
+    assert json.loads((job_dir / "job.json").read_text())["submitter"] == "fluffi-mbp"
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
+def test_without_a_token_a_guarded_bench_is_exit_2_naming_the_variable(
+    tmp_path: Path,
+    guarded_bridge: Bridge,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str | None,
+) -> None:
+    if value is not None:
+        monkeypatch.setenv(client.TOKEN_ENV, value)
+
+    assert submit(repo(tmp_path), "--image", str(image_file(tmp_path))) == 2
+
+    out = capsys.readouterr().out
+    assert "401" in out
+    assert client.TOKEN_ENV in out
+    assert guarded_bridge.auth == [None]
+    assert list((tmp_path / "outbox").iterdir()) == []
+
+
+def test_without_a_token_no_header_is_sent_to_an_open_bench(tmp_path: Path, bridge: Bridge) -> None:
+    assert submit(repo(tmp_path), "--image", str(image_file(tmp_path)), "--wait") == 0
+
+    assert set(bridge.auth) == {None}
+
+
+def test_every_request_verifies_tls_with_a_default_context(tmp_path: Path, bridge: Bridge) -> None:
+    assert submit(repo(tmp_path), "--image", str(image_file(tmp_path))) == 0
+
+    [context] = bridge.contexts
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+CA = "/workspace/.devcontainer/bench-ca.pem"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, None), ("", None), (CA, CA)], ids=["unset", "empty", "file"]
+)
+def test_the_ca_variable_names_the_file_the_context_trusts(
+    tmp_path: Path,
+    bridge: Bridge,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str | None,
+    expected: str | None,
+) -> None:
+    seen: list[str | None] = []
+    real = ssl.create_default_context
+
+    def spy(*, cafile: str | None = None) -> ssl.SSLContext:
+        seen.append(cafile)
+        return real()
+
+    monkeypatch.setattr(ssl, "create_default_context", spy)
+    if value is not None:
+        monkeypatch.setenv(client.CA_ENV, value)
+
+    assert submit(repo(tmp_path), "--image", str(image_file(tmp_path))) == 0
+
+    assert seen == [expected]
+
+
+def test_the_token_is_dropped_when_the_bench_redirects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # urllib copies a request's headers onto the redirected one, to whatever host and scheme.
+    monkeypatch.setenv(client.TOKEN_ENV, TOKEN)
+    sent: list[urllib.request.Request] = []
+
+    def capture(req: urllib.request.Request, timeout: float, context: object = None) -> Reply:
+        sent.append(req)
+        return Reply(json.dumps({"id": JOB}).encode())
+
+    fake_urlopen(monkeypatch, capture)
+    argv = ["--repo", str(repo(tmp_path)), "submit", "c6", "ex1", "--bench", "https://bench.test"]
+
+    assert cli.main([*argv, "--image", str(image_file(tmp_path))]) == 0
+
+    [req] = sent
+    assert req.get_header("Authorization") == f"Bearer {TOKEN}"
+    moved = urllib.request.HTTPRedirectHandler().redirect_request(
+        req, io.BytesIO(), 303, "See Other", http.client.HTTPMessage(), "http://evil.test/jobs"
+    )
+    assert moved is not None
+    assert moved.get_header("Authorization") is None
+
+
+@pytest.mark.parametrize("content", [None, b"not a certificate"], ids=["missing", "junk"])
+def test_a_ca_file_that_cannot_be_loaded_is_exit_2_naming_the_variable(
+    tmp_path: Path,
+    bridge: Bridge,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    content: bytes | None,
+) -> None:
+    ca = tmp_path / "bench-ca.pem"
+    if content is not None:
+        ca.write_bytes(content)
+    monkeypatch.setenv(client.CA_ENV, str(ca))
+
+    assert submit(repo(tmp_path), "--image", str(image_file(tmp_path))) == 2
+
+    out = capsys.readouterr().out
+    assert client.CA_ENV in out
+    assert bridge.requests == []
+
+
+@pytest.mark.parametrize(
+    "url", ["http://192.168.1.50:8000", "http://bench.example.net", "http://bench.example.net:80"]
+)
+def test_a_token_is_never_sent_over_plain_http_off_loopback(
+    tmp_path: Path,
+    wire: Wire,
+    commands: Commands,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    url: str,
+) -> None:
+    monkeypatch.setenv(client.TOKEN_ENV, TOKEN)
+    root = repo(tmp_path)
+
+    code = cli.main(["--repo", str(root), "submit", "c6", "ex1", "--bench", url])
+
+    assert code == 2
+    out = capsys.readouterr().out
+    assert "https://" in out
+    assert TOKEN not in out
+    assert commands.names == []  # refused before anything is built
+    assert wire.calls == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:8000", "http://localhost:8000", "http://[::1]:8000", "https://bench.test"],
+    ids=["ipv4", "localhost", "ipv6", "https"],
+)
+def test_a_token_may_travel_to_loopback_or_over_https(
+    tmp_path: Path, wire: Wire, commands: Commands, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv(client.TOKEN_ENV, TOKEN)
+    root = repo(tmp_path)
+
+    assert cli.main(["--repo", str(root), "submit", "c6", "ex1", "--bench", url]) == 0
+
+    assert wire.urls == [f"{url}/jobs"]
+
+
+@pytest.mark.parametrize(
+    "token",
+    [f"{TOKEN}\r", f"{TOKEN}\r\n", f"{TOKEN}\nX-Evil: 1", f"{TOKEN}\t", f"{TOKEN}€"],
+    ids=["cr", "crlf", "lf-header", "tab", "non-ascii"],
+)
+def test_a_malformed_token_is_exit_2_without_showing_it(
+    tmp_path: Path,
+    wire: Wire,
+    commands: Commands,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    token: str,
+) -> None:
+    # http.client would reject a CR or LF with an error quoting the whole header
+    monkeypatch.setenv(client.TOKEN_ENV, token)
+
+    assert submit(repo(tmp_path)) == 2
+
+    out = capsys.readouterr().out
+    assert client.TOKEN_ENV in out
+    assert TOKEN not in out
+    assert commands.names == []  # refused before anything is built
+    assert wire.calls == []
+
+
+def test_without_a_token_plain_http_off_loopback_still_goes_through(
+    tmp_path: Path, wire: Wire, commands: Commands
+) -> None:
+    assert submit(repo(tmp_path)) == 0  # URL is http://bench.test
+
+    assert wire.urls == [f"{URL}/jobs"]
+
+
+# -- loopback and proxies ----------------------------------------------------------------------
+
+
+class Recorder(http.server.BaseHTTPRequestHandler):
+    """Answers every GET and POST with `{"id": "..."}` and records path and Authorization."""
+
+    def _answer(self) -> None:
+        seen: list[tuple[str, str | None]] = self.server.seen  # type: ignore[attr-defined]
+        seen.append((self.path, self.headers.get("Authorization")))
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        body = json.dumps({"id": JOB}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = _answer
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return None
+
+
+class Listener:
+    def __init__(self) -> None:
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Recorder)
+        self.seen: list[tuple[str, str | None]] = []
+        self.server.seen = self.seen  # type: ignore[attr-defined]
+        self.port: int = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+
+@pytest.fixture
+def listeners() -> Iterator[Callable[[], Listener]]:
+    """Start recording servers on 127.0.0.1; all are shut down at teardown."""
+    started: list[Listener] = []
+
+    def start() -> Listener:
+        started.append(Listener())
+        return started[-1]
+
+    yield start
+    for listener in started:
+        listener.close()
+
+
+@pytest.fixture
+def proxied(monkeypatch: pytest.MonkeyPatch) -> Callable[[Listener], None]:
+    """Point the proxy environment at a listener, with NO_PROXY out of the way."""
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    def point(proxy: Listener) -> None:
+        for name in ("HTTP_PROXY", "http_proxy"):
+            monkeypatch.setenv(name, f"http://127.0.0.1:{proxy.port}")
+
+    return point
+
+
+def test_a_loopback_bench_bypasses_the_proxy_so_the_token_never_reaches_it(
+    listeners: Callable[[], Listener],
+    proxied: Callable[[Listener], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bench, proxy = listeners(), listeners()
+    proxied(proxy)
+    monkeypatch.setenv(client.TOKEN_ENV, TOKEN)
+
+    reply = client._request(f"http://127.0.0.1:{bench.port}/jobs", None, 5)
+
+    assert reply == {"id": JOB}
+    assert bench.seen == [("/jobs", f"Bearer {TOKEN}")]
+    assert proxy.seen == []
+
+
+def test_a_non_loopback_bench_still_goes_through_the_proxy(
+    listeners: Callable[[], Listener], proxied: Callable[[Listener], None]
+) -> None:
+    proxy = listeners()
+    proxied(proxy)
+
+    reply = client._request("http://bench.test/jobs", None, 5)
+
+    assert reply == {"id": JOB}
+    assert [path for path, _ in proxy.seen] == ["http://bench.test/jobs"]
+
+
+def proxy_maps(opener: urllib.request.OpenerDirector) -> list[dict[str, str]]:
+    handlers: list[object] = getattr(opener, "handlers")  # noqa: B009  (untyped in typeshed)
+    return [getattr(h, "proxies") for h in handlers if isinstance(h, urllib.request.ProxyHandler)]  # noqa: B009
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://localhost:8000", "http://127.0.0.2", "https://[::1]:8443"],
+    ids=["localhost", "127.0.0.2", "ipv6"],
+)
+def test_loopback_benches_skip_proxies(url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.setenv(name, "http://proxy.test:3128")
+
+    opener = client._opener(url, ssl.create_default_context())
+
+    # an empty ProxyHandler has no `<scheme>_open`, so the opener drops it: no proxy handler left
+    assert proxy_maps(opener) == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://bench.test", "http://127.0.0.1.evil.test", "http://localhost.evil.test"],
+    ids=["https", "lookalike-ip", "lookalike-localhost"],
+)
+def test_other_benches_keep_the_proxy(url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.setenv(name, "http://proxy.test:3128")
+
+    opener = client._opener(url, ssl.create_default_context())
+
+    assert any(proxies for proxies in proxy_maps(opener))

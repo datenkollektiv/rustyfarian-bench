@@ -27,7 +27,7 @@ Walking skeleton: `submit` uploads and waits, `serve` flashes, judges and stores
 
 ## Constraints
 - The local `run` command and the TOML schema stay unchanged for existing consumer repos.
-- No authentication: anyone in the IoT network can flash a board (proof of concept only).
+- The walking skeleton had no authentication; tokens and TLS came with `remote-bench-auth-v1.md`.
 - The client needs only HTTP access to the bench host, no USB.
 - The bench host needs `espflash` and `uv`; boards attach to it over USB.
 - Only `espflash`-detectable ESP32 boards; AVR (`detect = false`) is out of v1.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -77,7 +78,16 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             raise
         ui.warn("serve needs its web dependencies: install `rustyfarian-bench[serve]`")
         return 2
-    server.serve(args.host, args.port, args.outbox, args.job_timeout, args.detect_timeout)
+    server.serve(
+        args.host,
+        args.port,
+        args.outbox,
+        args.job_timeout,
+        args.detect_timeout,
+        token_file=args.token_file,
+        ssl_certfile=args.ssl_certfile,
+        ssl_keyfile=args.ssl_keyfile,
+    )
     return 0
 
 
@@ -122,7 +132,12 @@ def main(argv: list[str] | None = None) -> int:
     submit = sub.add_parser("submit", help="build here, run the check on a remote bench host")
     submit.add_argument("board", help="board key, e.g. `s3`")
     submit.add_argument("example", help="example name")
-    submit.add_argument("--bench", required=True, metavar="URL", help="the bench host's base URL")
+    submit.add_argument(
+        "--bench",
+        default=os.environ.get(client.URL_ENV) or None,  # "" is unset, as the devcontainer sets
+        metavar="URL",
+        help=f"the bench host's base URL (default: ${client.URL_ENV})",
+    )
     submit.add_argument("--check", help="check on the board, when several list the example")
     submit.add_argument("--image", type=Path, help="flash image to upload instead of building one")
     submit.add_argument("--no-build", action="store_true", help="skip the build and image steps")
@@ -143,12 +158,24 @@ def main(argv: list[str] | None = None) -> int:
         metavar="SECONDS",
         help="seconds a job waits for its board before it fails",
     )
+    serve.add_argument(
+        "--token-file",
+        type=Path,
+        metavar="PATH",
+        help='TOML of `name = "token"` lines; required off loopback',
+    )
+    serve.add_argument(
+        "--ssl-certfile", type=Path, metavar="PATH", help="TLS certificate; required off loopback"
+    )
+    serve.add_argument("--ssl-keyfile", type=Path, metavar="PATH", help="its private key")
     serve.set_defaults(func=_cmd_serve)
 
     sub.add_parser("list", help="list scenarios").set_defaults(func=_cmd_list)
     sub.add_parser("detect", help="probe connected boards").set_defaults(func=_cmd_detect)
 
     args = parser.parse_args(argv)
+    if args.command == "submit" and args.bench is None:
+        submit.error(f"--bench URL is required, or set ${client.URL_ENV}")
     args.repo = args.repo.resolve()
     try:
         return int(args.func(args))
