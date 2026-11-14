@@ -131,10 +131,11 @@ def _submitter(scope: Scope, tokens: dict[str, str]) -> str | None:
     if scheme.lower() != "bearer":
         return None
     sent = token.strip().encode("utf-8")
-    for known, name in tokens.items():
-        if hmac.compare_digest(known.encode("utf-8"), sent):
-            return name
-    return None
+    # compare against every token, so the time does not reveal which one matched
+    matches = [
+        name for known, name in tokens.items() if hmac.compare_digest(known.encode("utf-8"), sent)
+    ]
+    return matches[0] if matches else None
 
 
 def _decode_image(text: str) -> bytes:

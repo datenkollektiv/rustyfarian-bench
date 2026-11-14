@@ -579,6 +579,7 @@ def guarded_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     """A bridge to an app that wants a bearer token."""
     token_file = tmp_path / "tokens.toml"
     token_file.write_text(f'fluffi-mbp = "{TOKEN}"\n')
+    token_file.chmod(0o600)
     argv = child("pass", "all good")
     runner_ = partial(remote.run_job, timeout=30, argv=argv)
     app = server.create_app(tmp_path / "outbox", runner=runner_, token_file=token_file)

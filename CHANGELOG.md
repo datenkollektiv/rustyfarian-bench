@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `run --unique-board` refuses to guess between boards of the same chip: with two attached and no `mac` or `--port` it ends with an `error`, and a busy or silent port blocks the decision until `--detect-timeout`.
 - `just serve` and `just submit <repo> <board> <example>` recipes; `just smoke-install` also checks the `serve` hint of the base wheel.
 - `serve --token-file PATH` requires a bearer token from that TOML file (`name = "token"`) on every request, re-read per request so a token is added or revoked without a restart; each job records the token's name as `submitter`.
+- `serve` refuses a token file other users have access to, and a token that is not printable ASCII or has leading or trailing spaces.
 - `serve --ssl-certfile PATH --ssl-keyfile PATH` terminates TLS in uvicorn; off loopback, `serve` refuses to start without the token file and both TLS files.
 - `submit` sends `RUSTYFARIAN_BENCH_TOKEN` as a bearer token, trusts the CA in `RUSTYFARIAN_BENCH_CA`, and takes the bench URL from `RUSTYFARIAN_BENCH_URL` when `--bench` is not given; with a token set it refuses a plain `http://` bench off loopback.
 - `submit` sends requests to a loopback bench directly, ignoring `HTTP_PROXY` and the system proxy, so a proxy never sees the token.

@@ -394,7 +394,9 @@ An image can hold Wi-Fi credentials and `outbox/` is kept forever, so clear the 
 ### Tokens and TLS
 
 Off loopback, every request needs a bearer token from the server's token file, and the token travels only over TLS.
-The token file is TOML, one line per person and machine, each token at least 32 ASCII characters:
+The token file is TOML, one line per person and machine, each token at least 32 printable ASCII characters.
+Generate every token with `openssl rand -hex 32`: `serve` checks the length, not the randomness.
+Other users must have no access to the file (`chmod 600`), or `serve` exits 2 at start and answers 503 later; group access is allowed, for a group that runs `serve`:
 
 ```toml
 # /srv/bench/tokens.toml, chmod 600
@@ -405,6 +407,9 @@ ci = "..."
 `serve` reads the file on every request, so a line added or removed takes effect at once, without a restart that would kill a running job.
 Each job records the token's name as `submitter`, never the token; a file that cannot be read stops `serve` at start and answers 503 to everyone later.
 A request without a valid token is 401 before any of its body is read, and `GET /jobs/<id>` needs the token too.
+Any valid token submits jobs and reads every job, whoever sent it: `submitter` is attribution, not access control.
+Deleting a line stops that token's next request, but a job it already queued or started still runs.
+Keep each token dedicated to this bench, and revoke it at once if it may have leaked.
 
 The client sends `Authorization: Bearer $RUSTYFARIAN_BENCH_TOKEN`; an empty variable counts as unset.
 With a token set, `submit` refuses an `http://` bench that is not loopback and exits 2, so a token never crosses the network in the clear; `http://127.0.0.1:…` through an ssh tunnel is fine.
