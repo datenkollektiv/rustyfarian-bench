@@ -328,22 +328,30 @@ On the host:
 
 ```bash
 uv tool install 'rustyfarian-bench[serve] @ git+https://github.com/datenkollektiv/rustyfarian-bench'
-rustyfarian-bench serve --host 0.0.0.0 --outbox /srv/bench/outbox
+rustyfarian-bench serve --host 0.0.0.0 --port 8443 --outbox /srv/bench/outbox \
+    --token-file /srv/bench/tokens.toml \
+    --ssl-certfile /srv/bench/bench.pem --ssl-keyfile /srv/bench/bench-key.pem
 ```
 
 The host needs `espflash`, a uv-managed Python ≥ 3.12 and a user in the `dialout` group.
-`serve` listens on `127.0.0.1:8000` by default; `--host 0.0.0.0` opens it to the network, and `--job-timeout` (default 600 s) ends a job that runs too long.
+`serve` listens on `127.0.0.1:8000` by default, open and in the clear, for an ssh tunnel; `--token-file` works on loopback too, for a reverse proxy or `tailscale serve` that adds TLS in front.
+Any other `--host` needs `--token-file` and both TLS files, or `serve` exits 2 naming the missing one; see [Tokens and TLS](#tokens-and-tls).
+`--job-timeout` (default 600 s) ends a job that runs too long.
 `--detect-timeout` (default 30 s) fails a job whose board is not attached in that time, so the worker is free for the next job.
 Without the `serve` extra, `serve` prints the install hint and exits 2.
-From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just submit <repo> <board> <example> --bench URL` sends a sibling repo's check to it.
+From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just submit <repo> <board> <example> --bench http://127.0.0.1:8000` sends a sibling repo's check to it.
 
 From the client, in a consumer repo whose `bench.toml` has an `image` command:
 
 ```bash
-rustyfarian-bench --repo . submit s3 hal_s3_b3f --bench http://pi.local:8000 --wait
+export RUSTYFARIAN_BENCH_URL=https://bench.example.net:8443
+export RUSTYFARIAN_BENCH_TOKEN="$(security find-generic-password -s rustyfarian-bench-token -w)"
+export RUSTYFARIAN_BENCH_CA=/path/to/bench-ca.pem   # only with a private CA
+rustyfarian-bench --repo . submit s3 hal_s3_b3f --wait
 ```
 
-`submit <board> <example> --bench URL` builds (`--no-build` skips it), runs the `image` command, uploads and prints the job id.
+`submit <board> <example>` builds (`--no-build` skips it), runs the `image` command, uploads and prints the job id.
+`--bench URL` names the bench host when `RUSTYFARIAN_BENCH_URL` is not set, and wins over it when it is.
 `--image PATH` uploads that file instead and skips both commands; `--check NAME` picks a check when several list the example.
 Without `--wait`, `submit` returns at once and the job runs on; with it, `submit` polls the log once a second and exits like `run`.
 Ctrl-C while waiting leaves the job running and exits 130; an unreachable host exits 2.
@@ -376,13 +384,60 @@ outbox/20261112-093000-a1b2c3/
 └── result.json    verdict, detail, exit code and the result rows
 ```
 
-`GET /jobs/<id>?offset=N` returns the job and the log from byte `N`; `POST /jobs` takes a JSON body with the scenario and the base64 image.
+`GET /jobs/<id>?offset=N` returns the job and the log from byte `N`; `POST /jobs` takes a JSON body with the scenario and the base64 image, and answers with the job, `submitter` included.
 `submit --wait` exits 0 on `pass`, 3 on `unverified` or `incomplete`, and 1 on anything else, as `run` does.
 A job keeps the recorded verdict only when `run`'s exit code agrees with it; otherwise it is `error`.
 A job a restart interrupted ends as `error`; killing `serve` with SIGKILL can leave a running child flashing.
 
-There is no authentication or TLS, so anyone who reaches the port can flash a board and read every job.
-An image can hold Wi-Fi credentials and `outbox/` is kept forever, so run `serve` only on a trusted network and clear the outbox yourself.
+An image can hold Wi-Fi credentials and `outbox/` is kept forever, so clear the outbox yourself.
+
+### Tokens and TLS
+
+Off loopback, every request needs a bearer token from the server's token file, and the token travels only over TLS.
+The token file is TOML, one line per person and machine, each token at least 32 ASCII characters:
+
+```toml
+# /srv/bench/tokens.toml, chmod 600
+fluffi-mbp = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"   # openssl rand -hex 32
+ci = "..."
+```
+
+`serve` reads the file on every request, so a line added or removed takes effect at once, without a restart that would kill a running job.
+Each job records the token's name as `submitter`, never the token; a file that cannot be read stops `serve` at start and answers 503 to everyone later.
+A request without a valid token is 401 before any of its body is read, and `GET /jobs/<id>` needs the token too.
+
+The client sends `Authorization: Bearer $RUSTYFARIAN_BENCH_TOKEN`; an empty variable counts as unset.
+With a token set, `submit` refuses an `http://` bench that is not loopback and exits 2, so a token never crosses the network in the clear; `http://127.0.0.1:…` through an ssh tunnel is fine.
+`submit` reaches a loopback bench directly, ignoring `HTTP_PROXY` and the system proxy, so a proxy never sees the token.
+A 401 names the variable; a certificate the client does not trust names `RUSTYFARIAN_BENCH_CA`.
+The token is never carried over a redirect.
+
+TLS is uvicorn's: `--ssl-certfile` and `--ssl-keyfile` go to it as they are, loaded once at start; a path that is not a file makes `serve` exit 2.
+With a private CA, point `RUSTYFARIAN_BENCH_CA` at the CA's PEM on every client; it replaces the system CAs, and as public material it can live in the consumer repo.
+Python 3.13+ verifies certificates strictly: the server certificate needs Subject and Authority Key Identifier extensions and a `subjectAltName` for the bench's DNS name, or the client fails with "Missing Authority Key Identifier".
+[mkcert](https://github.com/FiloSottile/mkcert) issues such certificates; with plain openssl, pass an extension file that sets `subjectKeyIdentifier = hash`, `authorityKeyIdentifier = keyid, issuer` and the `subjectAltName`.
+A Let's Encrypt certificate under a domain you own needs no `RUSTYFARIAN_BENCH_CA`.
+Tailscale in front (`tailscale serve` to a loopback `serve`) is another way to get TLS and reachability; give that `serve` `--token-file` too, or the app behind the tailnet is open.
+
+### From a devcontainer
+
+The agent-sandbox devcontainer forwards secrets from the host shell through `remoteEnv`, so the bench token follows the same path as the Claude token:
+
+```json
+"containerEnv": {
+  "RUSTYFARIAN_BENCH_URL": "https://bench.example.net:8443",
+  "RUSTYFARIAN_BENCH_CA": "/workspace/.devcontainer/bench-ca.pem"
+},
+"remoteEnv": {
+  "RUSTYFARIAN_BENCH_TOKEN": "${localEnv:RUSTYFARIAN_BENCH_TOKEN:}"
+}
+```
+
+Export the token in the shell that launches the IDE, next to the existing `CLAUDE_CODE_OAUTH_TOKEN` line; in Codespaces, store it as a repository secret of the same name.
+The sandbox firewall allows egress by DNS name only: add the bench's name to `.devcontainer/allowlist.d/60-project.txt` and rebuild.
+It refuses IP literals and `.local` or `.internal` names, so the bench needs a real multi-label name (a router name such as `bench.fritz.box`, or a name under your own domain) and a static address, because the allowlist pins the IP resolved at container start.
+Until it has one, `ssh -N -L 8000:127.0.0.1:8000 pi@<lan-ip>` from inside the container reaches a loopback `serve` with no allowlist change; pass `--bench http://127.0.0.1:8000` to use it, since `RUSTYFARIAN_BENCH_URL` points at the https name.
+Anything in the container's environment is readable by the coding agent; a leaked token flashes boards and reads the outbox, and revoking it is deleting one line.
 
 ## Development
 

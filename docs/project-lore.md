@@ -85,3 +85,13 @@ Fix: delete both the `sys.modules` entry and the package attribute, and patch `u
 **An `Exception` raised from ASGI middleware while FastAPI reads the request body becomes a 400, not your status code.**
 FastAPI wraps body parsing in `except Exception` and reports any error there as a malformed body.
 Fix: the streamed-size limit raises `server._TooLarge`, a `BaseException`, which `_BodyLimit` turns into a 413.
+
+**A private-CA certificate without key identifier extensions fails the `submit` client with "Missing Authority Key Identifier" even though the CA is trusted.**
+Python 3.13+ sets `VERIFY_X509_STRICT` in `ssl.create_default_context()`, so a leaf made with a bare `openssl x509 -req` (no extension file) is rejected; `curl` against the same server is happy.
+Fix: issue the server certificate with `subjectKeyIdentifier = hash`, `authorityKeyIdentifier = keyid, issuer` and a `subjectAltName`, as mkcert does; seen 2026-11-14 on Python 3.14 with the TLS smoke in `tmp/tls/`.
+
+**`urllib.request.urlopen` sends an `http://127.0.0.1` request through `HTTP_PROXY`, bearer token included, in the clear.**
+`proxy_bypass()` exempts loopback only when `NO_PROXY` names it, and on macOS `getproxies()` falls back to the system proxy settings.
+`add_unredirected_header` does not help: it only keeps the header off redirects, and the first request already goes to the proxy.
+Fix: `client._opener` adds `ProxyHandler({})` for a loopback URL, which replaces the default handler in `build_opener`; found in review 2026-11-14.
+The empty handler itself never shows up in `opener.handlers`, since `add_handler` skips a handler without `<scheme>_open` methods.

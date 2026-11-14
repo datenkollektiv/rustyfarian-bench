@@ -84,6 +84,6 @@ bench repo target *args:
 bench-list repo:
     uv run --locked rustyfarian-bench --repo "{{ if repo =~ '^/' { repo } else { justfile_directory() / '..' / repo } }}" list
 
-# submit a consumer's check to a remote bench: `just submit rustyfarian-network c3 hal_c3_connect_async --bench http://pi.local:8000 --wait`
+# submit a consumer's check to a remote bench (URL from $RUSTYFARIAN_BENCH_URL or --bench): `just submit rustyfarian-network c3 hal_c3_connect_async --wait`
 submit repo board example *args:
     uv run --locked rustyfarian-bench --repo "{{ if repo =~ '^/' { repo } else { justfile_directory() / '..' / repo } }}" submit "{{ board }}" "{{ example }}" {{ args }}

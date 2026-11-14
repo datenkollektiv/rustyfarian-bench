@@ -357,6 +357,102 @@ def test_a_job_id_collision_gets_a_fresh_id(
     assert (tmp_path / second.id / "job.json").is_file()
 
 
+# -- confining paths to their directory ---------------------------------------------------------
+
+
+def _real(path: Path) -> Path:
+    return Path(os.path.realpath(path))
+
+
+def test_contained_accepts_a_plain_child(tmp_path: Path) -> None:
+    assert remote.contained(tmp_path, "a") == _real(tmp_path) / "a"
+
+
+def test_contained_accepts_nested_parts(tmp_path: Path) -> None:
+    assert remote.contained(tmp_path, "a", "b.toml") == _real(tmp_path) / "a" / "b.toml"
+
+
+def test_contained_refuses_a_dot_dot_that_leaves(tmp_path: Path) -> None:
+    (tmp_path / "base").mkdir()
+
+    with pytest.raises(ConfigError):
+        remote.contained(tmp_path / "base", "..", "x")
+
+
+def test_contained_accepts_a_dot_dot_that_lands_back_inside(tmp_path: Path) -> None:
+    assert remote.contained(tmp_path, "a", "..", "b") == _real(tmp_path) / "b"
+
+
+def test_contained_refuses_an_absolute_part(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError):
+        remote.contained(tmp_path, "/etc/passwd")
+
+
+@pytest.mark.parametrize("parts", [(), (".",)])
+def test_contained_refuses_the_base_itself(tmp_path: Path, parts: tuple[str, ...]) -> None:
+    with pytest.raises(ConfigError):
+        remote.contained(tmp_path, *parts)
+
+
+def test_contained_refuses_a_symlink_pointing_outside(tmp_path: Path) -> None:
+    (tmp_path / "base").mkdir()
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "base" / "link").symlink_to(tmp_path / "outside")
+
+    with pytest.raises(ConfigError):
+        remote.contained(tmp_path / "base", "link")
+    with pytest.raises(ConfigError):
+        remote.contained(tmp_path / "base", "link", "x")
+
+
+def test_contained_accepts_a_symlink_pointing_inside(tmp_path: Path) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+
+    assert remote.contained(tmp_path, "link") == _real(tmp_path) / "real"
+
+
+def test_contained_works_for_a_relative_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "base").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    assert remote.contained(Path("base"), "a") == _real(tmp_path) / "base" / "a"
+
+
+def test_contained_works_for_a_symlinked_base(tmp_path: Path) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+
+    assert remote.contained(tmp_path / "link", "a") == _real(tmp_path) / "real" / "a"
+
+
+def test_contained_accepts_a_target_that_does_not_exist_yet(tmp_path: Path) -> None:
+    got = remote.contained(tmp_path, "new", "file.toml")
+
+    assert got == _real(tmp_path) / "new" / "file.toml"
+    assert not got.exists()
+
+
+def test_contained_refuses_a_sibling_sharing_the_base_prefix(tmp_path: Path) -> None:
+    (tmp_path / "outbox").mkdir()
+    (tmp_path / "outbox-evil").mkdir()
+
+    with pytest.raises(ConfigError):
+        remote.contained(tmp_path / "outbox", "..", "outbox-evil")
+
+
+def test_job_path_is_the_job_directory_inside_the_outbox(tmp_path: Path) -> None:
+    assert remote.job_path(tmp_path, JOB_ID) == _real(tmp_path) / JOB_ID
+
+
+@pytest.mark.parametrize("bad", ["../etc", "a/b", "", "..", "20260101-000000-ABCDEF"])
+def test_job_path_refuses_a_malformed_id(tmp_path: Path, bad: str) -> None:
+    with pytest.raises(ConfigError):
+        remote.job_path(tmp_path, bad)
+
+
 # -- reading a job -----------------------------------------------------------------------------
 
 
@@ -371,6 +467,39 @@ def test_read_job_is_none_for_a_bad_unknown_or_corrupt_id(tmp_path: Path) -> Non
     assert remote.read_job(tmp_path, JOB_ID) is None  # corrupt
 
 
+MARKER = "secret-marker-7f3a"
+
+
+def plant_outside_job(outbox: Path) -> Path:
+    """`outbox/JOB_ID` as a symlink to a real job directory elsewhere, holding a marker log."""
+    outbox.mkdir(exist_ok=True)
+    elsewhere = outbox.parent / "elsewhere"
+    outside = elsewhere / create_job(elsewhere, meta(), SCENARIO, IMAGE).id
+    (outside / "run.log").write_text(f"{MARKER}\n")
+    (outbox / JOB_ID).symlink_to(outside, target_is_directory=True)
+    return outside
+
+
+def test_contained_works_for_the_filesystem_root() -> None:
+    assert remote.contained(Path("/"), "etc") == _real(Path("/etc"))
+
+
+def test_read_job_is_none_for_a_job_json_that_links_outside(tmp_path: Path) -> None:
+    outbox = tmp_path / "outbox"
+    job = create_job(outbox, meta(), SCENARIO, IMAGE)
+    outside = tmp_path / "elsewhere.json"
+    (outbox / job.id / "job.json").rename(outside)
+    (outbox / job.id / "job.json").symlink_to(outside)
+
+    assert remote.read_job(outbox, job.id) is None
+
+
+def test_read_job_is_none_for_an_entry_that_links_outside_the_outbox(tmp_path: Path) -> None:
+    plant_outside_job(tmp_path / "outbox")
+
+    assert remote.read_job(tmp_path / "outbox", JOB_ID) is None
+
+
 def test_write_job_replaces_the_file_in_one_step(tmp_path: Path) -> None:
     job = create_job(tmp_path, meta(), SCENARIO, IMAGE)
     job_dir = tmp_path / job.id
@@ -380,6 +509,81 @@ def test_write_job_replaces_the_file_in_one_step(tmp_path: Path) -> None:
 
     assert read(job_dir).status == "running"
     assert [p.name for p in job_dir.iterdir() if p.name.startswith(".")] == []
+
+
+# -- who submitted a job -----------------------------------------------------------------------
+
+
+def test_the_submitter_is_recorded_in_job_json(tmp_path: Path) -> None:
+    job = create_job(tmp_path, meta(), SCENARIO, IMAGE, submitter="fluffi-mbp")
+
+    assert job.submitter == "fluffi-mbp"
+    assert read(tmp_path / job.id).submitter == "fluffi-mbp"
+
+
+def test_a_job_json_from_before_submitters_still_loads(tmp_path: Path) -> None:
+    job = create_job(tmp_path, meta(), SCENARIO, IMAGE)
+    job_dir = tmp_path / job.id
+    old = json.loads((job_dir / "job.json").read_text())
+    del old["submitter"]
+    (job_dir / "job.json").write_text(json.dumps(old))
+
+    assert read(job_dir).submitter == ""
+
+
+# -- the token file ----------------------------------------------------------------------------
+
+TOKEN = "0123456789abcdef0123456789abcdef"
+OTHER = "fedcba9876543210fedcba9876543210"
+
+
+def tokens_file(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "tokens.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_load_tokens_maps_each_token_to_its_name(tmp_path: Path) -> None:
+    path = tokens_file(
+        tmp_path, f'# one line per person and machine\nfluffi-mbp = "{TOKEN}"\nci = "{OTHER}"\n'
+    )
+
+    assert remote.load_tokens(path) == {TOKEN: "fluffi-mbp", OTHER: "ci"}
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        (f'a = "{TOKEN}"\nb = "{TOKEN}"\n', "twice"),
+        (f'"bad name" = "{TOKEN}"\n', "name"),
+        (f'"-x" = "{TOKEN}"\n', "name"),
+        ('short = "abc"\n', "32"),
+        (f'n = "{TOKEN}é"\n', "ASCII"),
+        ("n = 5\n", "string"),
+        (f'[group]\nn = "{TOKEN}"\n', "string"),
+        ("n = \n", "tokens.toml"),
+    ],
+    ids=["duplicate", "space-in-name", "dash-name", "short", "non-ascii", "int", "table", "syntax"],
+)
+def test_load_tokens_refuses_a_bad_file_without_echoing_a_token(
+    tmp_path: Path, text: str, match: str
+) -> None:
+    path = tokens_file(tmp_path, text)
+
+    with pytest.raises(ConfigError, match=match) as exc:
+        remote.load_tokens(path)
+
+    assert TOKEN not in str(exc.value)
+
+
+def test_load_tokens_refuses_an_empty_file(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="no tokens"):
+        remote.load_tokens(tokens_file(tmp_path, "# nobody yet\n"))
+
+
+def test_load_tokens_refuses_a_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"tokens\.toml"):
+        remote.load_tokens(tmp_path / "tokens.toml")
 
 
 # -- running a job -----------------------------------------------------------------------------
@@ -661,6 +865,15 @@ def test_recover_closes_unfinished_jobs_and_leaves_the_rest(tmp_path: Path) -> N
         job = read(d)
         assert (job.status, job.verdict, job.detail) == ("done", "error", remote.RESTARTED)
     assert (read(done).verdict, read(done).detail) == ("pass", "")
+
+
+def test_recover_leaves_an_entry_that_links_outside_the_outbox_alone(tmp_path: Path) -> None:
+    outside = plant_outside_job(tmp_path / "outbox")
+    before = (outside / "job.json").read_bytes()
+
+    recover(tmp_path / "outbox")
+
+    assert (outside / "job.json").read_bytes() == before
 
 
 def test_recover_without_an_outbox_does_nothing(tmp_path: Path) -> None:
