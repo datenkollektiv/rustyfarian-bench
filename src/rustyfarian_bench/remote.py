@@ -223,10 +223,12 @@ def loopback(host: str) -> bool:
 def load_tokens(path: Path) -> dict[str, str]:
     """The bearer tokens `serve` accepts, token to name, from a TOML file of `name = "token"`.
 
-    ConfigError for a file that is missing, malformed or holds a token twice; the message
-    never carries a token.
+    ConfigError for a file that is missing, accessible to other users (POSIX; group bits are
+    allowed), malformed or holding a token twice; the message never carries a token.
     """
     try:
+        if os.name == "posix" and path.stat().st_mode & 0o007:
+            raise ConfigError(f"{path}: other users have access to it; chmod 600 it")
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise ConfigError(f"{path}: {e}") from None
@@ -237,8 +239,11 @@ def load_tokens(path: Path) -> dict[str, str]:
             raise ConfigError(f"{path}: token {name}: expected a string")
         if len(token) < TOKEN_MIN:
             raise ConfigError(f"{path}: token {name}: expected at least {TOKEN_MIN} characters")
-        if not token.isascii():  # a header carries it, and clients encode the rest differently
-            raise ConfigError(f"{path}: token {name}: expected ASCII characters only")
+        # a header carries it, and the client refuses control characters too
+        if not (token.isascii() and token.isprintable()):
+            raise ConfigError(f"{path}: token {name}: expected printable ASCII")
+        if token != token.strip():  # `_submitter` strips what a client sends: it could never match
+            raise ConfigError(f"{path}: token {name}: leading or trailing spaces")
         if token in tokens:
             raise ConfigError(f"{path}: token {name}: the same token appears twice")
         tokens[token] = name

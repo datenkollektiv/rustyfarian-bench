@@ -540,6 +540,7 @@ OTHER = "fedcba9876543210fedcba9876543210"
 def tokens_file(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "tokens.toml"
     path.write_text(text, encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 
@@ -558,12 +559,27 @@ def test_load_tokens_maps_each_token_to_its_name(tmp_path: Path) -> None:
         (f'"bad name" = "{TOKEN}"\n', "name"),
         (f'"-x" = "{TOKEN}"\n', "name"),
         ('short = "abc"\n', "32"),
-        (f'n = "{TOKEN}é"\n', "ASCII"),
+        (f'n = "{TOKEN}é"\n', "printable ASCII"),
+        (f'n = "{TOKEN}\\t"\n', "printable ASCII"),
+        (f'n = "{TOKEN}\\u0001"\n', "printable ASCII"),
+        (f'n = " {TOKEN}"\n', "spaces"),
         ("n = 5\n", "string"),
         (f'[group]\nn = "{TOKEN}"\n', "string"),
         ("n = \n", "tokens.toml"),
     ],
-    ids=["duplicate", "space-in-name", "dash-name", "short", "non-ascii", "int", "table", "syntax"],
+    ids=[
+        "duplicate",
+        "space-in-name",
+        "dash-name",
+        "short",
+        "non-ascii",
+        "tab",
+        "control",
+        "edge-space",
+        "int",
+        "table",
+        "syntax",
+    ],
 )
 def test_load_tokens_refuses_a_bad_file_without_echoing_a_token(
     tmp_path: Path, text: str, match: str
@@ -574,6 +590,29 @@ def test_load_tokens_refuses_a_bad_file_without_echoing_a_token(
         remote.load_tokens(path)
 
     assert TOKEN not in str(exc.value)
+
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX")
+
+
+@posix_only
+@pytest.mark.parametrize("mode", [0o644, 0o602], ids=["world-readable", "world-writable"])
+def test_load_tokens_refuses_a_file_other_users_can_reach(tmp_path: Path, mode: int) -> None:
+    path = tokens_file(tmp_path, f'n = "{TOKEN}"\n')
+    path.chmod(mode)
+
+    with pytest.raises(ConfigError, match="chmod 600") as exc:
+        remote.load_tokens(path)
+
+    assert TOKEN not in str(exc.value)
+
+
+@posix_only
+def test_load_tokens_allows_a_group_readable_file(tmp_path: Path) -> None:
+    path = tokens_file(tmp_path, f'n = "{TOKEN}"\n')
+    path.chmod(0o640)
+
+    assert remote.load_tokens(path) == {TOKEN: "n"}
 
 
 def test_load_tokens_refuses_an_empty_file(tmp_path: Path) -> None:

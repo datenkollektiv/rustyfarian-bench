@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hmac
+import os
 from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
@@ -346,6 +348,7 @@ def test_a_relative_outbox_is_resolved_once(
 def token_file(tmp_path: Path) -> Path:
     path = tmp_path / "tokens.toml"
     path.write_text(f'fluffi-mbp = "{TOKEN}"\n')
+    path.chmod(0o600)
     return path
 
 
@@ -435,6 +438,35 @@ def test_a_token_file_that_went_bad_is_503_for_everyone(
     assert reply.status_code == 503
     assert str(token_file) not in reply.text
     assert list(outbox.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX")
+def test_a_token_file_loosened_after_start_is_503_for_everyone(
+    guarded: TestClient, token_file: Path, outbox: Path
+) -> None:
+    token_file.chmod(0o644)
+
+    reply = guarded.post("/jobs", json=body(), headers=BEARER)
+
+    assert reply.status_code == 503
+    assert str(token_file) not in reply.text
+    assert list(outbox.iterdir()) == []
+
+
+def test_a_submitter_is_compared_against_every_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokens = {TOKEN: "first", OTHER: "second", "x" * 32: "third"}
+    real = hmac.compare_digest
+    calls: list[bytes] = []
+
+    def spy(a: bytes, b: bytes) -> bool:
+        calls.append(a)
+        return real(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    scope: Any = {"headers": [(b"authorization", f"Bearer {TOKEN}".encode())]}
+
+    assert server._submitter(scope, tokens) == "first"
+    assert len(calls) == 3
 
 
 def test_an_app_without_a_token_file_stays_open(queued_api: TestClient) -> None:

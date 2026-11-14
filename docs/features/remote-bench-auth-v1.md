@@ -28,6 +28,9 @@ Today anyone who reaches the port can flash a board and read every job, so `serv
 |                                     No `--insecure` on the client | A rogue host must not harvest tokens or images                               | Verification toggle                                   |
 |   Private CA (mkcert) now; Tailscale and Let's Encrypt documented | Works on the LAN without a domain                                            | Tailnet-only bench with an open app                   |
 |                                         No token expiry or scopes | One team, one bench; revocation is deleting one line                         | Roles, expiring tokens                                |
+|                             Any token reads and submits every job | One team; `submitter` is attribution, not access                             | Per-token job ownership                               |
+|           Revoking stops new requests, not queued or running jobs | A running flash is not interrupted mid-write                                 | Cancel the revoked token's jobs                       |
+|                  Token file must not be accessible to other users | A world-readable file hands out every token                                  | Trust the README's `chmod 600`                        |
 
 ## Constraints
 - `client.py` stays stdlib-only: `urllib`, `ssl`, `os`, `json`.
@@ -60,3 +63,4 @@ Today anyone who reaches the port can flash a board and read every job, so `serv
 - 2026-11-14 — Review fixes: token dropped on redirects, ASCII-only tokens, missing TLS file exits 2, `serve` tests check the app enforces tokens
 - 2026-11-14 — Review P1: `urlopen` sent a loopback request through `HTTP_PROXY`, token included; loopback now skips proxies (lore)
 - 2026-11-14 — Review P2: a token with a CR or LF reached `http.client`, whose error quoted it; the client now refuses it first
+- 2026-11-14 — PR #12 review: access boundary documented, `_submitter` scans every token, token file refused when others can read it
