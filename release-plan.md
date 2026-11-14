@@ -64,7 +64,7 @@ Post-release version bump: none.
 
 Push `main` first and tag only once CI is green on that commit:
 
-```sh
+```bash
 git push origin main
 # wait for CI
 git tag -a vX.Y.Z -m "Release vX.Y.Z"
@@ -75,7 +75,7 @@ git push origin vX.Y.Z
 
 Before the GitHub release, from a directory outside this checkout:
 
-```sh
+```bash
 uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@vX.Y.Z rustyfarian-bench --help
 uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@vX.Y.Z rustyfarian-bench --repo <consumer> list
 ```

@@ -13,7 +13,8 @@ The runner already builds, detects, flashes, resets, reads serial and judges ste
 - The unchanged `run <example> --unattended --no-build --no-twins --detect-timeout N --unique-board` then runs as a child process there, with its output in `run.log`.
 - The server owns the flash command, `espflash write-bin` of the uploaded image at `0x0`, so no client command runs on the host.
 - The image is a merged flash image built by the consumer's optional `image` command, because a bare ELF gets espflash's bundled bootloader and may not boot.
-- The server refuses `setup`, `teardown`, `probe` and `run` on a step an unattended run reaches, `detect = false` boards and scenarios with no unattended step; this is the security boundary, and the client check is a convenience.
+- The server refuses `setup`, `teardown`, `probe` and `run` on a step an unattended run reaches, `detect = false` boards and scenarios with no unattended step.
+- That server check is the security boundary; the client check is a convenience.
 - Names and chips that reach a path or an argv are allowlisted, and a refused upload leaves no directory.
 - `POST /jobs` takes a JSON body with a base64 image, and `GET /jobs/{id}?offset=N` returns the log from a byte offset, so `submit --wait` polls.
 - One FIFO worker serves the whole host, so a probe never touches a board mid-flash.

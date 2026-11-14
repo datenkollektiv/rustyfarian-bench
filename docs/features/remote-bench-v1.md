@@ -50,7 +50,7 @@ Walking skeleton: `submit` uploads and waits, `serve` flashes, judges and stores
 ## Session Log
 - 2026-11-12 — Feature doc created via /feature dialog
 - 2026-11-12 — Walking skeleton implemented; hardware end-to-end and the Pi gate still open
-- 2026-11-13 — Hardware-free wire smoke on this laptop (merged C3 image via `--image`, no board): upload, worker, log polling and the 600 s job timeout work; a job for a missing board waits for a plug-in and holds the worker until the timeout (bug 001)
+- 2026-11-13 — Laptop wire smoke (merged C3 image via `--image`, no board): upload, worker, log polling, 600 s job timeout work; the job awaits a plug-in, holding the worker to timeout (bug 001)
 - 2026-11-14 — Laptop end-to-end passed: `submit --image` of a merged `hal_c3_connect_async` image (IDF v6.1 bootloader), connect check 3/3 on a C3-MINI-1 found by chip detection
 - 2026-11-14 — Bug 001 fixed: `serve --detect-timeout` (default 30 s) reaches the job's `run`, so a missing board fails the job instead of holding the worker
 - 2026-11-14 — Review fixes: the detect deadline is checked before every probe, and a job whose `run` exit code contradicts its recorded verdict ends as `error`

@@ -8,8 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `serve` (needs the `rustyfarian-bench[serve]` extra) runs a shared bench host: it takes uploaded images and scenarios over HTTP, runs them one at a time with `run --unattended`, and keeps each job in `outbox/<id>/`.
-  Without the extra, `serve` prints the install hint and exits 2.
+- `serve` (needs the `rustyfarian-bench[serve]` extra) runs a shared bench host that takes uploaded images and scenarios over HTTP.
+- `serve` runs the jobs one at a time with `run --unattended` and keeps each job in `outbox/<id>/`.
+- Without the `serve` extra, `serve` prints the install hint and exits 2.
 - `submit <board> <example> --bench URL` builds locally, uploads the image and scenario, and with `--wait` polls the log and exits like `run`; `--image PATH` skips the build and `--check NAME` picks a check.
 - An optional `image` command in `bench.toml` (under `[commands]` or per board, with `{example}` and `{image}`) writes the merged flash image `submit` uploads.
 - `run --no-twins` runs only the named example, not its twins.

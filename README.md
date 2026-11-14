@@ -30,7 +30,7 @@ Hardware runs are tested on macOS only; Linux serial ports are detected but unte
 
 Run a pinned release from a consumer repo, with no rustyfarian-bench checkout:
 
-```sh
+```bash
 uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.1.0 rustyfarian-bench --repo . list
 uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.1.0 rustyfarian-bench --repo . run s3
 ```
@@ -41,7 +41,7 @@ Pin the tag in the consumer's `bench` recipe; bumping it is how a consumer opts 
 
 From a consumer repo (e.g. `rustyfarian-peripherals`):
 
-```sh
+```bash
 just bench hal_s3_b3f     # one example, then offers the scenario's next examples
 just bench s3/rotary      # one check on one board
 just bench s3             # every check for a board
@@ -50,7 +50,7 @@ just bench hal_s3_b3f --no-twins   # only the named example, not its twins
 
 From this repo, against a sibling checkout:
 
-```sh
+```bash
 just bench rustyfarian-peripherals s3 b3f   # <repo> <target> [flags]
 just bench rustyfarian-ws2812 s3
 just bench-list rustyfarian-ws2812
@@ -58,7 +58,7 @@ just bench-list rustyfarian-ws2812
 
 Directly:
 
-```sh
+```bash
 uv run --project ../rustyfarian-bench rustyfarian-bench --repo . run hal_s3_b3f
 uv run --project ../rustyfarian-bench rustyfarian-bench --repo . list
 uv run --project ../rustyfarian-bench rustyfarian-bench detect
@@ -67,16 +67,35 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
 ## Session flow
 
 1. Build the example (`commands.build`, or the board's own `build`), so the slow part runs before the board is needed.
-2. Poll serial ports and run `espflash board-info` on each until the board's chip (and optional MAC) answers; a port another session holds is skipped, so two boards can bench side by side (pin `mac` when two boards share a chip: the lock is only held while a session reads its port).
-   `run --unique-board` refuses to guess instead: with two boards of the board's chip attached and no `mac` or `--port`, the run ends with an `error` naming both ports, and a busy or silent port blocks the decision until it resolves or `--detect-timeout` ends it.
-   A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash; it is found by its USB identity when it declares `usb_id = "vid:pid"` (plus `usb_serial` to tell two identical bridges apart), else it needs `--port` (a lone attached port is no proof of which board it is), and the run stops without it.
-   `run --detect-timeout SECONDS` ends the wait for a missing board with an `error` after that long (no probe starts after the limit, though a running probe may overrun it); without it the run waits for a plug-in.
+2. Poll serial ports and run `espflash board-info` on each until the board's chip (and optional MAC) answers.
+   - A port another session holds is skipped, so two boards can bench side by side.
+   - Pin `mac` when two boards share a chip: the lock is only held while a session reads its port.
+   - `run --unique-board` refuses to guess instead: with two boards of the board's chip attached and no `mac` or `--port`, the run ends with an `error` naming both ports.
+   - Under `--unique-board`, a busy or silent port blocks the decision until it resolves or `--detect-timeout` ends it.
+   - A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash.
+   - Such a board is found by its USB identity when it declares `usb_id = "vid:pid"`, plus `usb_serial` to tell two identical bridges apart.
+   - Otherwise, it needs `--port`, since a lone attached port is no proof of which board it is, and the run stops without it.
+   - `run --detect-timeout SECONDS` ends the wait for a missing board with an `error` after that long; without it the run waits for a plug-in.
+   - No probe starts after the limit, though a running probe may overrun it.
 3. Flash (`commands.flash`, or the board's own `flash`, with `{port}`).
-4. Open the port exclusively, clearing RTS before DTR so the open itself does not reset an ESP (USB Serial/JTAG or the usual RTS/DTR auto-reset circuit); on a `reset = "dtr"` board the reader raises DTR only for its reset pulse, though the OS or driver may still toggle the lines while opening. Then reset into the app, and read it with pyserial, reopening across USB re-enumeration. The reset is an RTS pulse (esptool's USB-JTAG sequence) by default; `reset = "dtr"` pulses DTR for auto-reset bridges (Arduino Nano, CH340/FT232) and `"none"` skips the pulse but keeps the ESP-safe open, whose brief DTR high can still reset a DTR auto-reset board (use `"dtr"` for those); `baud` is per board. Every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
-5. Run the steps; each step waits for Enter and drops the backlog before its clock starts (`arm = false` for a step that must read what the reset printed, e.g. the banner); a failed step offers a retry, then asks what the operator saw and records it as the step's `note`.
-   An `attended` watch (a `duration` step with `attended = true`) ends early when the operator presses Enter; it passes, and the detail records `ended by operator after N s of M s`; a `reject` seen before still fails it.
-   Timed waits show a shrinking countdown on a terminal; an armed `duration` step's prompt shows its length, where Enter keeps it and a typed number of seconds changes it for this run (a longer one asks for confirmation) (the step detail records `(scenario: N s)`).
-6. Offer the scenario's next example (e.g. the `idf` twin), then append the result to `bench/<board>/results.jsonl`; an example you asked for (everything but the twins of a named example) that you decline is recorded as `skipped`.
+4. Open the port exclusively, reset into the app, and read it with pyserial, reopening across USB re-enumeration.
+   - The open clears RTS before DTR, so it does not itself reset an ESP (USB Serial/JTAG or the usual RTS/DTR auto-reset circuit).
+   - On a `reset = "dtr"` board the reader raises DTR only for its reset pulse, though the OS or driver may still toggle the lines while opening.
+   - The reset is an RTS pulse (esptool's USB-JTAG sequence) by default.
+   - `reset = "dtr"` pulses DTR for auto-reset bridges (Arduino Nano, CH340/FT232).
+   - `reset = "none"` skips the pulse but keeps the ESP-safe open, whose brief DTR high can still reset a DTR auto-reset board (use `"dtr"` for those).
+   - `baud` is per board.
+   - Every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
+5. Run the steps.
+   - Each step waits for Enter and drops the backlog before its clock starts (`arm = false` for a step that must read what the reset printed, e.g. the banner).
+   - A failed step offers a retry, then asks what the operator saw and records it as the step's `note`.
+   - An `attended` watch (a `duration` step with `attended = true`) ends early and passes when the operator presses Enter, with the detail `ended by operator after N s of M s`.
+   - A `reject` seen before the Enter still fails it.
+   - Timed waits show a shrinking countdown on a terminal.
+   - An armed `duration` step's prompt shows its length: Enter keeps it, and a typed number of seconds changes it for this run.
+   - A longer length asks for confirmation, and a changed one adds `(scenario: N s)` to the step detail.
+6. Offer the scenario's next example (e.g. the `idf` twin), then append the result to `bench/<board>/results.jsonl`.
+   - An example you asked for (everything but the twins of a named example) that you decline is recorded as `skipped`.
 
 `--unattended` runs only the steps that need no person (no `confirm`, no `attended = true`) and implies `--yes`; `--attended` runs only the steps that need one.
 A scenario with no step for the mode is not built, flashed or recorded, and a run with nothing left fails.
@@ -149,7 +168,14 @@ Each step has `say` and exactly one of:
 
 `probe` is a modifier on `expect` or `duration` that takes the lines from a host command instead of the serial port (see "Host probes").
 
-Modifiers: `reject` (fails the step on match), `settle` (keep watching `reject` after the last `expect`), `optional` (a miss is a warning), `attended` (the step needs a person although it has no `confirm`, e.g. a PIR or a button press), `reset` (reset the board once the step starts, after Enter when armed, for a check the firmware runs at boot such as a calibration window; not on a `reset = "none"` board).
+Modifiers:
+- `reject` fails the step on match.
+- `settle` keeps watching `reject` after the last `expect`.
+- `optional` turns a miss into a warning.
+- `attended` marks a step that needs a person although it has no `confirm`, e.g. a PIR or a button press.
+- `reset` resets the board once the step starts (after Enter when armed), for a check the firmware runs at boot such as a calibration window.
+- `reset` is not allowed on a `reset = "none"` board.
+
 `expect` steps also see lines printed before the step started (e.g. the boot banner); `duration` steps only judge new lines.
 
 A named group in an `expect` pattern captures the matched text for later steps of the same example: `(?P<pole>SOUTH|NORTH)`.
@@ -170,32 +196,35 @@ Captures do not cross a mode split, so an `--attended` run may show a marker for
 ### Host probes
 
 `probe = ["just", "mqtt-watch", "{example}"]` runs a host command and judges its stdout with the step's `expect`, `reject`, `settle` and `duration`, so a broker check needs no `confirm`.
-The command is an argv list, with no shell.
-stdout is matched.
-stderr is only written to the log and echoed.
-The command runs in the consumer directory, in its own process group.
-At the end of the step the group gets SIGTERM, and SIGKILL after 2 s, so a `just` wrapper and its children go too.
-The command's own log is `<example>-<stamp>.probe<N>.log` beside the serial log.
-A command that exits before the step ends counts as a lost link, so `settle` and `duration` need a watcher that keeps running.
+
+The command:
+- is an argv list, with no shell, run in the consumer directory in its own process group;
+- has its stdout matched, while stderr is only written to the log and echoed;
+- gets SIGTERM at the end of the step, and SIGKILL after 2 s, so a `just` wrapper and its children go too;
+- writes its own log `<example>-<stamp>.probe<N>.log` beside the serial log;
+- counts as a lost link when it exits before the step ends, so `settle` and `duration` need a watcher that keeps running;
+- must flush each line: `python -u`, `stdbuf -oL`;
+- is an `error` result that ends the session when it cannot start, like a missing build tool;
+- is POSIX only (macOS and Linux).
+
 When a step fails, the detail adds `probe exited N` and the last stderr lines.
-The tool must flush each line: `python -u`, `stdbuf -oL`.
-Probe steps need no person unless `attended`: `--unattended` runs them and `--attended` skips them.
-Serial lines are not judged during a probe step; a lost serial link is only warned about afterwards.
 A retry starts the command again, so a probe must be a passive watcher.
-A command that cannot start is an `error` result and ends the session, like a missing build tool.
-Probes are POSIX only (macOS and Linux).
-`serial_reject = 'PANIC|panicked'` (only with `probe`) judges the serial lines while the probe runs.
-A match fails the step with `rejected serial line: '<line>'`, even after the probe matched.
-Serial lines from before the step are drained first, and a match is seen within 0.2 s.
-Without `serial_reject`, serial stays unjudged as above.
-Its `(?P=name)` references are checked like `reject`.
-`attended = true` is allowed on a probe step: `--attended` runs it, `--unattended` skips it.
-That keeps a probe next to the attended action it observes, such as an unplug.
-On an attended probe with `duration`, Enter ends the wait early.
-A probe that subscribes to a broker sees the retained replay at subscribe time.
-Make the pattern require a live message, e.g. match `retain=0`.
-A probe and a `run` in the same step have no readiness handshake.
-A non-retained message published before the subscriber is up can be missed.
+
+Modes:
+- Probe steps need no person unless `attended`: `--unattended` runs them and `--attended` skips them.
+- `attended = true` is allowed on a probe step: `--attended` runs it, `--unattended` skips it.
+- That keeps a probe next to the attended action it observes, such as an unplug.
+- On an attended probe with `duration`, Enter ends the wait early.
+
+Serial lines are not judged during a probe step; a lost serial link is only warned about afterwards.
+`serial_reject = 'PANIC|panicked'` (only with `probe`) judges the serial lines while the probe runs:
+- A match fails the step with `rejected serial line: '<line>'`, even after the probe matched.
+- Serial lines from before the step are drained first, and a match is seen within 0.2 s.
+- Its `(?P=name)` references are checked like `reject`.
+
+Pitfalls:
+- A probe that subscribes to a broker sees the retained replay at subscribe time, so make the pattern require a live message, e.g. match `retain=0`.
+- A probe and a `run` in the same step have no readiness handshake, so a non-retained message published before the subscriber is up can be missed.
 
 ```toml
 [[step]]
@@ -223,32 +252,33 @@ run_timeout = 10                     # default 30
 expect = '\[app\] rx topic=\S+/cmd payload=hello retained=false'
 ```
 
-The order per example is setup, build, detect, flash, steps, teardown.
-Hooks run once per example.
-An example the mode skips entirely runs no hooks.
-A setup command that exits non-zero, times out or cannot start is an `error` with `setup failed: <summary>`.
-Nothing is built or flashed then, and the rest of setup is skipped.
-The session goes on with the next example.
-Teardown always runs: after pass, fail, error, a failed setup and Ctrl-C.
-A second Ctrl-C skips the rest of teardown and stops the session.
-A failing teardown command is a warning; the verdict does not change.
-`setup` may use `{example}` and `{board}`.
-`teardown` may also use `{port}`, `{chip}` and `{mac}`.
-If detection never happened, a teardown command that needs `{port}`, `{chip}` or `{mac}` is skipped and recorded as `not run: {port} unknown`.
-`run` is an argv list on an `expect` or `duration` step, never on `confirm`.
-It may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures.
-Per attempt the order is: arm prompt, reset, probe starts, `run`, judging.
-With a `probe`, the probe starts first so it can see what `run` causes.
-A `run` plus `duration` step does not drain serial, so the board's reaction is judged.
-A failing `run` fails the step with `run failed: <summary>` before judging.
-A retry runs it again, and the evidence is the last attempt's.
-`run_timeout` defaults to 30 s and needs `run`.
-`hook_timeout` defaults to 60 s.
-A `run` step needs no person unless it is `attended` or has `confirm`.
-The `run` output is not captured for matching; use a `probe` for that.
-A command that exits normally does not end its process group, so a daemon that `setup` starts survives.
-A timeout and Ctrl-C end the group with SIGTERM, then SIGKILL after 2 s.
-Each command is run in the consumer directory, without a shell, and POSIX only.
+Hooks:
+- The order per example is setup, build, detect, flash, steps, teardown.
+- Hooks run once per example, and an example the mode skips entirely runs no hooks.
+- A setup command that exits non-zero, times out or cannot start is an `error` with `setup failed: <summary>`.
+- After a failed setup, nothing is built or flashed, the rest of setup is skipped, and the session goes on with the next example.
+- Teardown always runs: after pass, fail, error, a failed setup and Ctrl-C.
+- A second Ctrl-C skips the rest of teardown and stops the session.
+- A failing teardown command is a warning; the verdict does not change.
+- `setup` may use `{example}` and `{board}`, and `teardown` may also use `{port}`, `{chip}` and `{mac}`.
+- If detection never happened, a teardown command that needs `{port}`, `{chip}` or `{mac}` is skipped and recorded as `not run: {port} unknown`.
+- `hook_timeout` defaults to 60 s.
+
+`run`:
+- is an argv list on an `expect` or `duration` step, never on `confirm`;
+- may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures;
+- follows the per-attempt order arm prompt, reset, probe starts, `run`, judging, so a `probe` can see what `run` causes;
+- does not drain serial on a `duration` step, so the board's reaction is judged;
+- fails the step with `run failed: <summary>` before judging when it fails;
+- runs again on a retry, and the evidence is the last attempt's;
+- has a `run_timeout` that defaults to 30 s and needs `run`;
+- needs no person unless the step is `attended` or has `confirm`;
+- is not captured for matching; use a `probe` for that.
+
+Every hook and `run` command:
+- runs in the consumer directory, without a shell, and POSIX only;
+- does not end its process group when it exits normally, so a daemon that `setup` starts survives;
+- has its group ended on a timeout or Ctrl-C with SIGTERM, then SIGKILL after 2 s.
 
 Each command is recorded as `argv`, `exit_code`, `duration`, `timed_out`, `error`, `stdout_tail`, `stderr_tail` and `log`.
 The tails keep the last 5 lines, each cut to 200 characters.
@@ -277,14 +307,14 @@ The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s; none w
 
 ## Verdicts and exit codes
 
-| Verdict      | Meaning                                                                                          |
-|:-------------|:-------------------------------------------------------------------------------------------------|
-| `pass`       | every required step was observed and passed                                                      |
-| `fail`       | a step failed, or the run stopped before the last step                                           |
-| `unverified` | nothing failed, but a required `confirm` was skipped by `--yes`                                  |
+| Verdict      | Meaning                                                                                                                                       |
+|:-------------|:----------------------------------------------------------------------------------------------------------------------------------------------|
+| `pass`       | every required step was observed and passed                                                                                                   |
+| `fail`       | a step failed, or the run stopped before the last step                                                                                        |
+| `unverified` | nothing failed, but a required `confirm` was skipped by `--yes`                                                                               |
 | `error`      | the run broke (missing tool, no board within `--detect-timeout`, crash); the detail names the cause; a missing tool or board ends the session |
-| `aborted`    | Ctrl-C; the session ends, later examples do not start                                            |
-| `skipped`    | the operator declined a requested example; makes the run incomplete                              |
+| `aborted`    | Ctrl-C; the session ends, later examples do not start                                                                                         |
+| `skipped`    | the operator declined a requested example; makes the run incomplete                                                                           |
 
 `run` exits 0 when every example passed and 3 when the only shortfall is `unverified` or skipped work.
 It exits 1 on any fail, error or abort, 2 on a bench definition error, and 130 on Ctrl-C between examples.
@@ -296,7 +326,7 @@ A shared host with the boards attached (e.g. a Raspberry Pi) runs checks for cli
 
 On the host:
 
-```sh
+```bash
 uv tool install 'rustyfarian-bench[serve] @ git+https://github.com/datenkollektiv/rustyfarian-bench'
 rustyfarian-bench serve --host 0.0.0.0 --outbox /srv/bench/outbox
 ```
@@ -309,7 +339,7 @@ From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just
 
 From the client, in a consumer repo whose `bench.toml` has an `image` command:
 
-```sh
+```bash
 rustyfarian-bench --repo . submit s3 hal_s3_b3f --bench http://pi.local:8000 --wait
 ```
 
@@ -356,7 +386,7 @@ An image can hold Wi-Fi credentials and `outbox/` is kept forever, so run `serve
 
 ## Development
 
-```sh
+```bash
 just verify               # ruff, format check, mypy --strict, pytest
 just verify-python 3.12   # the same gate on the declared Python floor
 just smoke-install        # build the wheel and run it through an isolated uvx
