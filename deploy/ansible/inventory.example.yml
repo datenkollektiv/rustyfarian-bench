@@ -1,0 +1,13 @@
+---
+# Copy to inventory.yml (gitignored) and adjust; nothing here is secret.
+all:
+  hosts:
+    bench:
+      ansible_host: bench.fritz.box
+      ansible_user: admin
+  vars:
+    # the name clients use; it ends up in the certificate's subjectAltName
+    bench_fqdn: bench.fritz.box
+    # who may reach the bench port; SSH stays open to keys only
+    bench_allowed_cidrs:
+      - 192.168.178.0/24

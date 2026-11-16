@@ -1,6 +1,5 @@
 ---
-gate: hardware
-gate-note: rustyfarian-network wifi-connect scenario passes via `submit --wait` against a bench server
+gate: none
 desk-work: available
 ---
 
@@ -44,7 +43,7 @@ Walking skeleton: `submit` uploads and waits, `serve` flashes, judges and stores
 - [x] `submit` client: build, `image` command, upload, `--wait`
 - [x] Tests passing
 - [x] End-to-end on this laptop (`serve` in a shell or `screen`)
-- [ ] rustyfarian-network wifi-connect via `submit` against the Pi
+- [x] rustyfarian-network wifi-connect via `submit` against the Pi
 - [x] Documentation updated (README, ADR for the remote split, CHANGELOG)
 
 ## Session Log
@@ -56,3 +55,4 @@ Walking skeleton: `submit` uploads and waits, `serve` flashes, judges and stores
 - 2026-11-14 — Review fixes: the detect deadline is checked before every probe, and a job whose `run` exit code contradicts its recorded verdict ends as `error`
 - 2026-11-14 — Leftover processes of a job are ended whenever its `run` exits, so descendants of an exited child no longer keep the board's port
 - 2026-11-14 — MAC pin carried by `submit`, and `run --unique-board` (always passed by `serve`) refuses to guess between same-chip boards; found when a job took the C3-MINI-1 of two attached C3s
+- 2026-11-16 — Pi gate passed: `hal_c3_connect_async` 3/3 via `just pi-submit` against the provisioned Pi 5 (`bench.rustbox`, Wi-Fi, TLS, token)

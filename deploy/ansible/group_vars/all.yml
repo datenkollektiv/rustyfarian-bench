@@ -1,0 +1,7 @@
+---
+# shared by the `base` firewall and the `bench` service (IPv4 only: serve binds 0.0.0.0)
+bench_port: 8443
+# the encrypted bench secrets: tokens and the CA, see deploy/README.md
+bench_secrets_file: "{{ (playbook_dir ~ '/../../shared-secrets/bench.yaml') | realpath }}"
+# the cloud-init seed values; `base` takes the Wi-Fi settings from here too
+pi_env_file: "{{ (playbook_dir ~ '/../../shared-secrets/pi.env') | realpath }}"

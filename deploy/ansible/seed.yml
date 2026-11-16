@@ -1,0 +1,82 @@
+---
+# Writes the cloud-init seed onto a freshly written Raspberry Pi OS boot partition.
+# Run through `just pi-seed <bootfs>`, which supplies the PI_* values from shared-secrets/pi.env.
+- name: Seed cloud-init onto a Raspberry Pi OS boot partition
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    bootfs: "{{ lookup('ansible.builtin.env', 'PI_BOOTFS') }}"
+    pi_hostname: "{{ lookup('ansible.builtin.env', 'PI_HOSTNAME') }}"
+    pi_user: "{{ lookup('ansible.builtin.env', 'PI_USER') }}"
+    pi_ssh_pubkey: "{{ lookup('ansible.builtin.env', 'PI_SSH_PUBKEY') }}"
+    # default(…, true): an empty value counts as unset too
+    pi_timezone: "{{ lookup('ansible.builtin.env', 'PI_TIMEZONE') | default('Europe/Berlin', true) }}"
+    pi_locale: "{{ lookup('ansible.builtin.env', 'PI_LOCALE') | default('en_GB.UTF-8', true) }}"
+    pi_wifi_country: "{{ lookup('ansible.builtin.env', 'PI_WIFI_COUNTRY') | default('DE', true) }}"
+    pi_wifi_ssid: "{{ lookup('ansible.builtin.env', 'PI_WIFI_SSID', default='') }}"
+    pi_wifi_psk: "{{ lookup('ansible.builtin.env', 'PI_WIFI_PSK', default='') }}"
+    # OpenSSH public key types, the hardware-backed `sk-` ones included
+    seed_key_types: >-
+      (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)
+  tasks:
+    # a fresh id per seed, so cloud-init treats a reseeded card as a new instance;
+    # fixed once here, since a var would evaluate now() anew in every task
+    - name: Pick the instance id
+      ansible.builtin.set_fact:
+        pi_instance_id: "{{ pi_hostname }}-{{ now(utc=true, fmt='%Y%m%d%H%M%S') }}"
+
+    - name: Check the seed values
+      ansible.builtin.assert:
+        that:
+          - bootfs | length > 0
+          # \Z, not $: `$` also matches before a trailing newline
+          - pi_hostname is match('[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z')
+          - pi_user is match('[a-z_][a-z0-9_-]*\Z')
+          - pi_ssh_pubkey is match(seed_key_types ~ ' [^\n]*\Z')
+          - pi_wifi_ssid == '' or (pi_wifi_psk | length) >= 8
+        fail_msg: >-
+          name the boot partition (`just pi-seed /Volumes/bootfs`) and set PI_HOSTNAME, PI_USER, PI_SSH_PUBKEY
+          (and PI_WIFI_PSK with PI_WIFI_SSID) in shared-secrets/pi.env
+        quiet: true
+
+    - name: Look for the boot partition's marker files
+      ansible.builtin.stat:
+        path: "{{ bootfs }}/{{ item }}"
+      loop: [cmdline.txt, config.txt]
+      register: seed_markers
+
+    - name: Refuse anything that is not a Raspberry Pi boot partition
+      ansible.builtin.assert:
+        that: seed_markers.results | map(attribute='stat.exists') | min
+        fail_msg: "{{ bootfs }} has no cmdline.txt and config.txt; is the card's bootfs mounted there?"
+        quiet: true
+
+    - name: Write user-data and meta-data
+      ansible.builtin.template:
+        src: ../cloud-init/{{ item }}.j2
+        dest: "{{ bootfs }}/{{ item }}"
+        mode: "0644"
+      loop: [user-data, meta-data]
+
+    - name: Write network-config
+      ansible.builtin.template:
+        src: ../cloud-init/network-config.j2
+        dest: "{{ bootfs }}/network-config"
+        mode: "0644"
+      no_log: true  # holds the Wi-Fi PSK
+
+    - name: Read cmdline.txt
+      ansible.builtin.slurp:
+        path: "{{ bootfs }}/cmdline.txt"
+      register: seed_cmdline
+
+    # Imager adds this too: without it the NoCloud datasource cache is dropped on every boot
+    - name: Point the kernel command line at this seed
+      ansible.builtin.copy:
+        dest: "{{ bootfs }}/cmdline.txt"
+        content: "{{ seed_cmdline_kept ~ ' ds=nocloud;i=' ~ pi_instance_id }}\n"
+        mode: "0644"
+      vars:
+        seed_cmdline_kept: "{{ seed_cmdline.content | b64decode | trim | regex_replace(' ds=nocloud;i=\\S+', '') }}"

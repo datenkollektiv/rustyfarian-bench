@@ -1,0 +1,15 @@
+---
+# a release tag: the install is skipped when `uv tool list` already shows it
+bench_version: v0.6.0
+bench_repo: https://github.com/datenkollektiv/rustyfarian-bench
+bench_home: /srv/bench
+bench_outbox: "{{ bench_home }}/outbox"
+bench_etc: /etc/rustyfarian-bench
+bench_tool_dir: /opt/rustyfarian-bench
+bench_job_timeout: 600
+bench_detect_timeout: 30
+bench_cert_days: 825
+# a restart ends running and queued jobs as `error`; only this overrides the guard
+bench_force_restart: false
+# exists while a restart is owed, so a refused one is retried by the next run
+bench_restart_marker: "{{ bench_etc }}/restart-pending"

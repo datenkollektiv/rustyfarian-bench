@@ -1,0 +1,60 @@
+---
+# one directory per version, so a bump unpacks afresh instead of finding the old binary
+- name: Create the download cache
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ tools_cache_dir }}"
+    - "{{ tools_cache_dir }}/uv-{{ tools_uv_version }}"
+    - "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}"
+
+- name: Download uv
+  ansible.builtin.get_url:
+    url: "{{ tools_uv_release }}/{{ tools_uv_version }}/uv-aarch64-unknown-linux-gnu.tar.gz"
+    dest: "{{ tools_cache_dir }}/uv-{{ tools_uv_version }}.tar.gz"
+    checksum: sha256:{{ tools_uv_sha256 }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Unpack uv
+  ansible.builtin.unarchive:
+    src: "{{ tools_cache_dir }}/uv-{{ tools_uv_version }}.tar.gz"
+    dest: "{{ tools_cache_dir }}/uv-{{ tools_uv_version }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]  # drop the uv-aarch64-unknown-linux-gnu/ prefix
+    creates: "{{ tools_cache_dir }}/uv-{{ tools_uv_version }}/uv"
+
+- name: Download espflash
+  ansible.builtin.get_url:
+    url: "{{ tools_espflash_release }}/v{{ tools_espflash_version }}/espflash-aarch64-unknown-linux-gnu.zip"
+    dest: "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}.zip"
+    checksum: sha256:{{ tools_espflash_sha256 }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Unpack espflash
+  ansible.builtin.unarchive:
+    src: "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}.zip"
+    dest: "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}"
+    remote_src: true
+    creates: "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}/espflash"
+
+- name: Install uv and espflash
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: /usr/local/bin/{{ item.name }}
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { name: uv, src: "{{ tools_cache_dir }}/uv-{{ tools_uv_version }}/uv" }
+    - { name: espflash, src: "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}/espflash" }
+  loop_control:
+    label: "{{ item.name }}"

@@ -1,0 +1,29 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }} — deploy/ansible/roles/base/templates/nftables.conf.j2
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        iif "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+        meta l4proto { icmp, ipv6-icmp } accept
+
+        # SSH stays open: keys only, and a typo in the CIDRs must not lock us out
+        tcp dport 22 accept
+
+        # serve binds 0.0.0.0, so the bench port is IPv4 only
+        ip saddr { {{ bench_allowed_cidrs | join(', ') }} } tcp dport {{ bench_port }} accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

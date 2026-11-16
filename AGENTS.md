@@ -25,6 +25,7 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 - `just verify` — ruff lint, format check, `mypy --strict`, pytest; the non-modifying gate.
 - `just pre-commit` — `ruff format`, then `verify`.
 - `just detect` — probe the connected boards.
+- `just deploy-lint` — lint the bench host provisioning in `deploy/` (Ansible, cloud-init); needs the network, so it is not part of `verify`.
 - Dependencies are managed with uv (`uv.lock` committed, Python pinned in `.python-version`); never use pip or a hand-activated venv.
 
 ## Key Conventions
@@ -46,4 +47,5 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 
 - `README.md` — session flow, consumer layout, step kinds and modifiers.
 - `justfile` and `pyproject.toml` — the gate and the tool configuration.
+- `deploy/README.md` — the Raspberry Pi bench host from a blank SD card: cloud-init seed, Ansible, SOPS secrets in the gitignored `shared-secrets/`.
 - `docs/project-lore.md` — point-in-time debugging discoveries; verify entries against current code before acting on them.

@@ -1,0 +1,264 @@
+---
+# --- secrets, decrypted on the controller and only ever held in memory ---
+
+- name: Load the bench secrets
+  ansible.builtin.set_fact:
+    bench_secrets: "{{ lookup('community.sops.sops', bench_secrets_file) | from_yaml }}"
+  no_log: true
+
+# `serve` refuses a bad token file at start, which would end in a restart loop, so every rule
+# of `load_tokens` (remote.py) is checked here first: NAME and NAME_MAX for the names, and
+# TOKEN_MIN, printable ASCII without edge spaces, strings only and no duplicates for the tokens.
+# \Z, not $, which also matches before a trailing newline.
+- name: Check the tokens
+  ansible.builtin.assert:
+    that:
+      - bench_secrets.bench_ca_key is defined
+      - bench_secrets.bench_ca_cert is defined
+      - bench_secrets.bench_tokens | default({}) | length > 0
+      - bench_secrets.bench_tokens.keys() | reject('match', '[A-Za-z0-9][A-Za-z0-9_-]{0,79}\Z') | list == []
+      - bench_secrets.bench_tokens.values() | select('string') | list | length == bench_secrets.bench_tokens | length
+      - bench_secrets.bench_tokens.values() | map('length') | min >= 32
+      - bench_secrets.bench_tokens.values() | reject('match', '[!-~]([ -~]*[!-~])?\Z') | list == []
+      - bench_secrets.bench_tokens.values() | unique | list | length == bench_secrets.bench_tokens | length
+    fail_msg: >-
+      shared-secrets/bench.yaml needs the CA (`just pi-ca-init`) and at least one token
+      named [A-Za-z0-9][A-Za-z0-9_-]* whose quoted value is 32+ printable ASCII characters,
+      no edge spaces, each token once (`just secrets-edit bench.yaml`)
+    quiet: true
+  no_log: true
+
+- name: Check bench_version
+  ansible.builtin.assert:
+    that: bench_version is match('v[0-9]+\.[0-9]+\.[0-9]+\Z')
+    # the install is skipped by matching `uv tool list`, which prints `rustyfarian-bench vX.Y.Z`;
+    # a branch or SHA would never match and reinstall and restart serve on every run
+    fail_msg: bench_version must be a release tag such as v0.6.0, not {{ bench_version }}
+    quiet: true
+
+# --- user and directories ---
+
+- name: Create the bench group
+  ansible.builtin.group:
+    name: bench
+    system: true
+
+- name: Create the bench user
+  ansible.builtin.user:
+    name: bench
+    group: bench
+    groups: [dialout]
+    append: true
+    system: true
+    home: "{{ bench_home }}"
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create the bench directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: bench
+    mode: "0750"
+  loop:
+    - { path: "{{ bench_home }}", owner: bench }
+    - { path: "{{ bench_outbox }}", owner: bench }
+    - { path: "{{ bench_etc }}", owner: root }
+
+# --- rustyfarian-bench itself, root-owned so the service cannot rewrite its own code ---
+
+- name: Read the installed tools
+  ansible.builtin.command: uv tool list
+  environment: &bench_uv_env
+    UV_TOOL_DIR: "{{ bench_tool_dir }}/tools"
+    UV_TOOL_BIN_DIR: /usr/local/bin
+    UV_CACHE_DIR: /var/cache/rustyfarian-bench/uv
+    UV_PYTHON_DOWNLOADS: never
+  register: bench_tools
+  changed_when: false
+  check_mode: false
+
+- name: Read the service state
+  ansible.builtin.systemd_service:
+    name: rustyfarian-bench
+  register: bench_service
+  changed_when: false
+  check_mode: false
+
+# Read before anything replaces serve's code: a job runs from the installed tool, so an upgrade
+# under it is as bad as a restart. Best effort: the queue lives in memory, but every unfinished
+# job has a job.json that is not "done"; a job submitted during this run is not seen.
+- name: Find unfinished jobs
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, pathlib, sys
+        for p in sorted(pathlib.Path(sys.argv[1]).glob("*/job.json")):
+            if json.loads(p.read_text()).get("status") != "done":
+                print(p.parent.name)
+      - "{{ bench_outbox }}"
+  register: bench_busy
+  changed_when: false
+  check_mode: false
+  when: bench_service.status.ActiveState == 'active'
+
+- name: Refuse to upgrade under unfinished jobs
+  ansible.builtin.assert:
+    that: bench_busy.stdout_lines | default([]) == [] or bench_force_restart | bool
+    fail_msg: >-
+      rustyfarian-bench {{ bench_version }} would replace the code these jobs run from:
+      {{ bench_busy.stdout_lines | default([]) | join(', ') }}. Wait, or rerun with -e bench_force_restart=true.
+    quiet: true
+  when: ('rustyfarian-bench ' ~ bench_version) not in bench_tools.stdout_lines
+
+- name: Install rustyfarian-bench {{ bench_version }}
+  ansible.builtin.command:
+    argv:
+      - uv
+      - tool
+      - install
+      - --force
+      - --python
+      - /usr/bin/python3
+      - rustyfarian-bench[serve] @ git+{{ bench_repo }}@{{ bench_version }}
+  environment: *bench_uv_env
+  when: ('rustyfarian-bench ' ~ bench_version) not in bench_tools.stdout_lines
+  register: bench_install
+  changed_when: true
+
+# --- TLS: the key stays on the Pi, the controller signs its CSR ---
+
+- name: Create the server key
+  community.crypto.openssl_privatekey:
+    path: "{{ bench_etc }}/key.pem"
+    type: ECC
+    curve: secp256r1
+    owner: root
+    group: bench
+    mode: "0640"
+  register: bench_key
+
+- name: Describe the server certificate
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ bench_etc }}/key.pem"
+    common_name: "{{ bench_fqdn }}"
+    subject_alt_name: ["DNS:{{ bench_fqdn }}"]
+    key_usage: [digitalSignature]
+    extended_key_usage: [serverAuth]
+  register: bench_csr
+  changed_when: false
+
+- name: Look for the current certificate
+  ansible.builtin.stat:
+    path: "{{ bench_etc }}/cert.pem"
+  register: bench_cert_file
+
+- name: Check the current certificate's validity
+  community.crypto.x509_certificate_info:
+    path: "{{ bench_etc }}/cert.pem"
+    valid_at:
+      in_30_days: "+30d"
+  register: bench_cert_info
+  when: bench_cert_file.stat.exists
+
+- name: Read the current certificate
+  ansible.builtin.slurp:
+    path: "{{ bench_etc }}/cert.pem"
+  register: bench_cert_current
+  # an expiring certificate is not passed on, so the next task issues a new one
+  when: bench_cert_file.stat.exists and bench_cert_info.valid_at.in_30_days
+
+- name: Sign the server certificate with the bench CA
+  community.crypto.x509_certificate_pipe:
+    provider: ownca
+    content: "{{ (bench_cert_current.content | b64decode) if bench_cert_current.content is defined else omit }}"
+    csr_content: "{{ bench_csr.csr }}"
+    ownca_content: "{{ bench_secrets.bench_ca_cert }}"
+    ownca_privatekey_content: "{{ bench_secrets.bench_ca_key }}"
+    ownca_not_after: "+{{ bench_cert_days }}d"
+  delegate_to: localhost
+  become: false
+  vars:
+    # the controller's Python, which uvx gave `cryptography`
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  register: bench_cert
+  no_log: true
+
+- name: Install the server certificate
+  ansible.builtin.copy:
+    dest: "{{ bench_etc }}/cert.pem"
+    content: "{{ bench_cert.certificate }}"
+    owner: root
+    group: bench
+    mode: "0640"
+  register: bench_cert_written
+
+# `serve` re-reads this on every request, so a change needs no restart
+- name: Write the token file
+  ansible.builtin.template:
+    src: tokens.toml.j2
+    dest: "{{ bench_etc }}/tokens.toml"
+    owner: root
+    group: bench
+    mode: "0640"
+  no_log: true
+
+# --- the service ---
+
+- name: Install the systemd unit
+  ansible.builtin.template:
+    src: rustyfarian-bench.service.j2
+    dest: /etc/systemd/system/rustyfarian-bench.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: bench_unit
+
+# A refused restart must not be forgotten: the next run sees nothing changed, so the need
+# lives on disk until a restart has happened.
+- name: Look for a restart a previous run refused
+  ansible.builtin.stat:
+    path: "{{ bench_restart_marker }}"
+  register: bench_restart_pending
+
+- name: Decide whether serve must restart
+  ansible.builtin.set_fact:
+    bench_restart: >-
+      {{ bench_restart_pending.stat.exists or bench_unit.changed or bench_install.changed
+         or bench_key.changed or bench_cert_written.changed }}
+
+- name: Remember that serve must restart
+  ansible.builtin.file:
+    path: "{{ bench_restart_marker }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: bench_restart | bool
+
+- name: Refuse to end unfinished jobs
+  ansible.builtin.assert:
+    that: bench_busy.stdout_lines | default([]) == [] or bench_force_restart | bool
+    fail_msg: >-
+      serve must restart, but these jobs are not done: {{ bench_busy.stdout_lines | default([]) | join(', ') }}.
+      A restart ends them as `error`; wait, or rerun with -e bench_force_restart=true.
+    quiet: true
+  when: bench_restart | bool
+
+- name: Start serve
+  ansible.builtin.systemd_service:
+    name: rustyfarian-bench
+    enabled: true
+    # a unit written by a refused run is reloaded now
+    daemon_reload: "{{ bench_restart | bool }}"
+    state: "{{ 'restarted' if bench_restart | bool else 'started' }}"
+
+- name: Forget the pending restart
+  ansible.builtin.file:
+    path: "{{ bench_restart_marker }}"
+    state: absent

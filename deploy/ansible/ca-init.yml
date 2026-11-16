@@ -1,0 +1,80 @@
+---
+# Creates the bench's private CA once, straight into the SOPS-encrypted bench secrets.
+# Run through `just pi-ca-init`; no key ever lands on disk in plaintext.
+- name: Create the bench CA
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ca_common_name: rustyfarian-bench CA
+    # uvx's Python, which has cryptography; an explicit localhost would discover another one
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  tasks:
+    - name: Look for existing bench secrets
+      ansible.builtin.stat:
+        path: "{{ bench_secrets_file }}"
+      register: ca_existing
+
+    # Idempotent: an existing CA is kept as it is, since a new one would invalidate every
+    # client's RUSTYFARIAN_BENCH_CA.
+    - name: Keep an existing CA
+      when: ca_existing.stat.exists
+      block:
+        - name: Report the existing CA
+          ansible.builtin.debug:
+            msg: "{{ bench_secrets_file }} exists; the CA stays as it is. Tokens: `just secrets-edit bench.yaml`."
+
+        - name: Stop here
+          ansible.builtin.meta: end_play
+
+    # sops_encrypt runs sops inside the target directory; a missing one surfaces as
+    # "no matching creation rules found"
+    - name: Create the secrets directory
+      ansible.builtin.file:
+        path: "{{ bench_secrets_file | dirname }}"
+        state: directory
+        mode: "0700"
+
+    - name: Generate the CA key
+      community.crypto.openssl_privatekey_pipe:
+        type: ECC
+        curve: secp384r1
+      register: ca_key
+      no_log: true
+
+    - name: Describe the CA
+      community.crypto.openssl_csr_pipe:
+        privatekey_content: "{{ ca_key.privatekey }}"
+        common_name: "{{ ca_common_name }}"
+        use_common_name_for_san: false
+        basic_constraints: ["CA:TRUE", "pathlen:0"]
+        basic_constraints_critical: true
+        key_usage: [keyCertSign, cRLSign]
+        key_usage_critical: true
+        create_subject_key_identifier: true
+      register: ca_csr
+      no_log: true
+
+    - name: Self-sign the CA certificate
+      community.crypto.x509_certificate_pipe:
+        provider: selfsigned
+        csr_content: "{{ ca_csr.csr }}"
+        privatekey_content: "{{ ca_key.privatekey }}"
+        selfsigned_not_after: "+3650d"
+      register: ca_cert
+      no_log: true
+
+    - name: Encrypt the CA into the bench secrets
+      community.sops.sops_encrypt:
+        path: "{{ bench_secrets_file }}"
+        config_path: "{{ (playbook_dir ~ '/../../.sops.yaml') | realpath }}"
+        content_yaml:
+          bench_tokens: {}
+          bench_ca_key: "{{ ca_key.privatekey }}"
+          bench_ca_cert: "{{ ca_cert.certificate }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Next step
+      ansible.builtin.debug:
+        msg: "CA created. Add tokens with `just secrets-edit bench.yaml`, each from `openssl rand -hex 32`."

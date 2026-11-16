@@ -1,0 +1,3 @@
+# Rendered by `just pi-seed`; a new instance-id makes cloud-init run its first-boot modules again.
+instance-id: {{ pi_instance_id | to_json }}
+local-hostname: {{ pi_hostname | to_json }}
