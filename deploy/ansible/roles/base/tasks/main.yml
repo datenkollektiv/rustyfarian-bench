@@ -1,0 +1,155 @@
+---
+- name: Check the firewall sources
+  ansible.builtin.assert:
+    that: bench_allowed_cidrs | default([]) | length > 0
+    fail_msg: set bench_allowed_cidrs in inventory.yml, or nobody can reach the bench port
+    quiet: true
+
+# off for `just pi-idempotent`: a Debian update arriving between two runs is not drift
+- name: Upgrade all packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: full
+  when: base_full_upgrade | bool
+
+- name: Install the base packages
+  ansible.builtin.apt:
+    name:
+      - git                 # uv installs rustyfarian-bench from a git tag
+      - nftables
+      - python3-cryptography  # community.crypto keys and CSRs on the Pi
+      - systemd-timesyncd   # TLS needs a correct clock
+      - unattended-upgrades
+      - unzip               # espflash ships as a zip
+    state: present
+
+# Neither is on the Lite image; a later desktop or kiosk package could pull them in.
+- name: Remove packages that grab USB-serial ports
+  ansible.builtin.apt:
+    name: [brltty, modemmanager]
+    state: absent
+
+# macOS ssh forwards LC_ALL=en_US.UTF-8 and Debian's sshd accepts it; without the locale,
+# every login and every apt run warns "cannot change locale"
+- name: List the en_US.UTF-8 locale ssh clients forward
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: '^#?\s*en_US\.UTF-8 UTF-8'
+    line: en_US.UTF-8 UTF-8
+
+# checked against `locale -a`, not via a handler: a handler a failed run never reached
+# would leave the line listed and the locale missing forever
+- name: Read the generated locales
+  ansible.builtin.command: locale -a
+  register: base_locales
+  changed_when: false
+  check_mode: false
+
+- name: Generate the listed locales
+  ansible.builtin.command: locale-gen
+  when: "'en_US.utf8' not in base_locales.stdout_lines"
+  changed_when: true
+
+- name: Turn on unattended security upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Keep the clock in sync
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+
+# The first value wins in sshd, and 10- sorts before cloud-init's 50-cloud-init.conf.
+- name: Allow SSH with keys only
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-bench.conf
+    content: |
+      AuthenticationMethods publickey
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      AllowUsers {{ ansible_user }}
+      MaxAuthTries 3
+      X11Forwarding no
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload ssh
+
+# Wi-Fi lives here, not only in the seed: a PSK change is `just pi-provision`, not a reflash.
+- name: Load the Wi-Fi settings from pi.env
+  ansible.builtin.set_fact:
+    base_wifi: "{{ lookup('community.sops.sops', pi_env_file, input_type='dotenv', output_type='json') | from_json }}"
+  no_log: true
+
+# the same name as cloud-init's profile, so this takes it over instead of adding a second one
+- name: Name the Wi-Fi profile
+  ansible.builtin.set_fact:
+    base_wifi_wanted: "{{ base_wifi.PI_WIFI_SSID | default('') | length > 0 }}"
+    base_wifi_name: netplan-wlan0-{{ base_wifi.PI_WIFI_SSID | default('') }}
+
+# Compared by hand: community.general.nmcli reported a change on every run, and each
+# change reconnects the Wi-Fi, which cuts a provisioning run that goes over it.
+- name: Read the current Wi-Fi profile
+  ansible.builtin.command:
+    argv: [nmcli, --show-secrets, --escape, "no", --get-values,
+           "802-11-wireless.ssid,802-11-wireless-security.key-mgmt,802-11-wireless-security.psk",
+           connection, show, "{{ base_wifi_name }}"]
+  register: base_wifi_current
+  changed_when: false
+  failed_when: false  # rc 10: no such profile yet, so the next task adds it
+  check_mode: false
+  when: base_wifi_wanted
+  no_log: true
+
+- name: Configure the Wi-Fi
+  ansible.builtin.command:
+    argv: "{{ (base_wifi_modify if base_wifi_current.rc == 0 else base_wifi_add) + base_wifi_settings }}"
+  vars:
+    base_wifi_modify: [nmcli, connection, modify, "{{ base_wifi_name }}"]
+    base_wifi_add: [nmcli, connection, add, type, wifi, con-name, "{{ base_wifi_name }}", ifname, wlan0]
+    base_wifi_settings:
+      - 802-11-wireless.ssid
+      - "{{ base_wifi.PI_WIFI_SSID }}"
+      - 802-11-wireless-security.key-mgmt
+      - wpa-psk
+      - 802-11-wireless-security.psk
+      - "{{ base_wifi.PI_WIFI_PSK }}"
+      - connection.autoconnect
+      - "yes"
+  when:
+    - base_wifi_wanted
+    - base_wifi_current.stdout_lines != [base_wifi.PI_WIFI_SSID, 'wpa-psk', base_wifi.PI_WIFI_PSK]
+  register: base_wifi_profile
+  changed_when: true
+  no_log: true
+
+- name: Connect the Wi-Fi with its new settings
+  ansible.builtin.command: nmcli connection up {{ base_wifi_name }}
+  when: base_wifi_profile is changed
+  changed_when: true
+
+- name: Configure the firewall
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: Reload nftables
+
+- name: Enable the firewall at boot
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: true
+    state: started

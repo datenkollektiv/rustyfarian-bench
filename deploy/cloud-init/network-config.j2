@@ -1,0 +1,16 @@
+# Rendered by `just pi-seed` from deploy/cloud-init/network-config.j2 (netplan v2).
+version: 2
+ethernets:
+  eth0:
+    dhcp4: true
+    optional: true
+{% if pi_wifi_ssid %}
+wifis:
+  wlan0:
+    dhcp4: true
+    optional: true
+    regulatory-domain: {{ pi_wifi_country | to_json }}
+    access-points:
+      {{ pi_wifi_ssid | to_json }}:
+        password: {{ pi_wifi_psk | to_json }}
+{% endif %}

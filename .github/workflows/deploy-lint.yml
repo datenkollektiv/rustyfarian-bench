@@ -1,0 +1,41 @@
+name: Deploy lint
+
+# separate from Verify: it downloads Galaxy collections, and their outage must not redden the Python gate
+on:
+  push:
+    branches: ["main"]
+    paths: ["deploy/**", "justfile", ".github/workflows/deploy-lint.yml"]
+  pull_request:
+    branches: ["main"]
+    paths: ["deploy/**", "justfile", ".github/workflows/deploy-lint.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # the job runs tools from uvx and Galaxy; they get no token to push with
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          cache-suffix: deploy-lint
+
+      - name: Setup just
+        uses: extractions/setup-just@v4
+
+      - name: yamllint, syntax check, ansible-lint, cloud-init schema
+        run: just deploy-lint

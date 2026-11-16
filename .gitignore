@@ -11,3 +11,10 @@ CLAUDE.md
 memory/
 tmp/
 release/
+deploy/ansible/.collections/
+deploy/ansible/inventory.yml
+# SOPS + age (convention v2), all local only in this public repo, encrypted or not:
+# the recipient list, the direnv key check and the encrypted secrets
+.envrc
+.sops.yaml
+shared-secrets/

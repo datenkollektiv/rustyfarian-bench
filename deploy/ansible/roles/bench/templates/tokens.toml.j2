@@ -1,0 +1,4 @@
+# {{ ansible_managed }} — from shared-secrets/bench.yaml; edit there, then `just pi-provision`
+{% for name, token in bench_secrets.bench_tokens | dictsort %}
+{{ name }} = {{ token | string | to_json }}
+{% endfor %}

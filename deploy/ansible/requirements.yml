@@ -1,0 +1,7 @@
+---
+# installed into .collections/ by `just deploy-collections`
+collections:
+  - name: community.crypto
+    version: 3.5.1
+  - name: community.sops
+    version: 2.5.1

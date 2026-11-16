@@ -1,0 +1,21 @@
+---
+# Template for the repo root's .sops.yaml (gitignored, like everything SOPS here):
+#   cp deploy/sops.example.yaml .sops.yaml
+# then replace the placeholder with your age public key, printed by `age-keygen -y <your key file>`.
+# Each person who decrypts gets one line; after a change run `just secrets-updatekeys`.
+groups:
+  bench: &bench
+    age:
+      # you
+      - age1REPLACE-WITH-YOUR-AGE-PUBLIC-KEY
+
+creation_rules:
+  # pi.env: the cloud-init seed values for `just pi-seed`, encrypted whole
+  - path_regex: (^|/)shared-secrets/[^/]+\.(env|json)$
+    key_groups:
+      - *bench
+  # bench.yaml: bench_tokens and bench_ca_key match and are encrypted, bench_ca_cert stays readable
+  - path_regex: (^|/)shared-secrets/[^/]+\.ya?ml$
+    encrypted_regex: ^(data|stringData|.*(password|secret|token|key).*)$
+    key_groups:
+      - *bench

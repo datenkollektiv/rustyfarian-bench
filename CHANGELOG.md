@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `deploy/` provisions a Raspberry Pi 5 as the remote bench host: a cloud-init seed (`just pi-seed`) and an Ansible playbook (`just pi-provision`) that installs `serve` as a hardened systemd service with TLS and tokens.
+- Bench host secrets (CA, tokens, Wi-Fi) live SOPS-encrypted in the gitignored `shared-secrets/`, handled by `just secrets-edit`, `decrypt`, `encrypt`, `secrets-updatekeys`, `pi-ca-init` and `pi-ca-cert`.
+- `just verify` runs `secrets-check` first, which fails on any unencrypted file in `shared-secrets/`.
+- `just doctor` checks every bench host prerequisite and names the fix for each gap; `--deep` also decrypts to check the key and the secrets.
+- `just pi-check` and `just pi-idempotent` check a provisioned bench; `just deploy-lint` lints `deploy/`, also as a separate CI workflow.
+
 ## [0.6.0] - 2026-11-15
 
 ### Added
@@ -14,12 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `serve` runs the jobs one at a time with `run --unattended` and keeps each job in `outbox/<id>/`.
 - Without the `serve` extra, `serve` prints the install hint and exits 2.
 - `submit <board> <example> --bench URL` builds locally, uploads the image and scenario, and with `--wait` polls the log and exits like `run`; `--image PATH` skips the build and `--check NAME` picks a check.
+- `submit` carries the board's `mac` to the server, which pins it in the job's `bench.toml`; a malformed `mac` is refused before the build.
 - An optional `image` command in `bench.toml` (under `[commands]` or per board, with `{example}` and `{image}`) writes the merged flash image `submit` uploads.
 - `run --no-twins` runs only the named example, not its twins.
 - `run --detect-timeout SECONDS` ends the wait for a missing board with an `error`; without it `run` still waits for a plug-in.
 - `serve --detect-timeout SECONDS` (default 30) passes that limit to every job.
 - `serve` refuses scenarios with `setup`, `teardown`, a `probe` or `run` on an unattended step, a `detect = false` board, or no unattended step.
-- `run --unique-board` refuses to guess between boards of the same chip: with two attached and no `mac` or `--port` it ends with an `error`, and a busy or silent port blocks the decision until `--detect-timeout`.
+- `run --unique-board` refuses to guess between boards of the same chip: with two attached and no `mac` or `--port` it ends with an `error`, and a busy or silent port blocks the decision until `--detect-timeout`; `serve` runs every job with it.
 - `just serve` and `just submit <repo> <board> <example>` recipes; `just smoke-install` also checks the `serve` hint of the base wheel.
 - `serve --token-file PATH` requires a bearer token from that TOML file (`name = "token"`) on every request, re-read per request so a token is added or revoked without a restart; each job records the token's name as `submitter`.
 - `serve` refuses a token file other users have access to, and a token that is not printable ASCII or has leading or trailing spaces.
@@ -27,15 +36,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `submit` sends `RUSTYFARIAN_BENCH_TOKEN` as a bearer token, trusts the CA in `RUSTYFARIAN_BENCH_CA`, and takes the bench URL from `RUSTYFARIAN_BENCH_URL` when `--bench` is not given; with a token set it refuses a plain `http://` bench off loopback.
 - `submit` sends requests to a loopback bench directly, ignoring `HTTP_PROXY` and the system proxy, so a proxy never sees the token.
 - `submit` refuses a token that is not printable ASCII (a stray newline, carriage return or other control character) and exits 2 without showing it.
-
-### Fixed
-
-- `submit` carries the board's `mac` to the server, which pins it in the job's `bench.toml` (a malformed `mac` is refused before the build).
-- A remote job no longer guesses between boards of the same chip: `serve` runs every job with `--unique-board`.
-- A `serve` job for a board that is not attached no longer holds the worker until `--job-timeout`; it ends as `error` after `--detect-timeout`.
-- `run --detect-timeout` checks the deadline before every probe, so no probe starts after it.
-- A `serve` job whose child exits with a code that contradicts its recorded verdict ends as `error`.
-- A `serve` job's leftover processes are ended whenever its `run` exits, not only on `--job-timeout`.
 
 ## [0.5.0] - 2026-11-10
 

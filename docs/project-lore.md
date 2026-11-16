@@ -95,3 +95,24 @@ Fix: issue the server certificate with `subjectKeyIdentifier = hash`, `authority
 `add_unredirected_header` does not help: it only keeps the header off redirects, and the first request already goes to the proxy.
 Fix: `client._opener` adds `ProxyHandler({})` for a loopback URL, which replaces the default handler in `build_opener`; found in review 2026-11-14.
 The empty handler itself never shows up in `opener.handlers`, since `add_handler` skips a handler without `<scheme>_open` methods.
+
+---
+
+## Bench Host Provisioning
+
+**`community.sops.sops_encrypt` into a directory that does not exist fails with sops' "error loading config: no matching creation rules found".**
+The message points at `.sops.yaml`, but the rules are fine: the module runs sops with the target directory as its working directory, and that directory is missing.
+The same `.sops.yaml` matches the same path once the directory exists.
+Fix: create the directory first, as `deploy/ansible/ca-init.yml` does; found with sops 3.13.3 and community.sops 2.5.1 on 2026-11-15.
+
+**`ansible-playbook -i localhost,` discovers an interpreter for `localhost` instead of using the one Ansible runs in.**
+Implicit localhost uses `ansible_playbook_python`, uvx's Python with `cryptography` and PyYAML; an explicit `localhost` found Homebrew's Python 3.15 without them.
+Fix: the controller playbooks set `ansible_python_interpreter: "{{ ansible_playbook_python }}"`, and so does the delegated signing task in the `bench` role.
+
+**ansible-core 2.19+ renders an `assert`'s `fail_msg` even when the assertion passes.**
+A `fail_msg` that reads a field of a skipped task's result (`bench_busy.stdout_lines`) fails the play with "object of type 'dict' has no attribute", although the condition guarded it with `default([])`.
+Fix: give every registered field in `fail_msg` the same `default(...)` as in `that`; found on the first Pi run 2026-11-16.
+
+**A handler queued in a run that fails later never runs, and the next run never queues it again.**
+The first Pi run wrote `/etc/locale.gen` and the sshd drop-in, then failed in the `bench` role before the handlers ran; later runs found both files in place and reported `ok`.
+Fix: `force_handlers = true` in `deploy/ansible/ansible.cfg`, and the locale is now checked against `locale -a` instead of a handler; found 2026-11-16.

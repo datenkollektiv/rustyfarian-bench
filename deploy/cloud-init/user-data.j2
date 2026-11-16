@@ -1,0 +1,20 @@
+#cloud-config
+# Rendered by `just pi-seed` from deploy/cloud-init/user-data.j2: makes the Pi reachable, nothing more.
+hostname: {{ pi_hostname | to_json }}
+manage_etc_hosts: true
+timezone: {{ pi_timezone | to_json }}
+locale: {{ pi_locale | to_json }}
+
+# singular `user:` replaces the default `pi` user and keeps its groups and sudo rights
+user:
+  name: {{ pi_user | to_json }}
+  lock_passwd: true
+  ssh_authorized_keys:
+    - {{ pi_ssh_pubkey | to_json }}
+
+disable_root: true
+ssh_pwauth: false
+
+# Imager 2.0.12 enables SSH this way; the image ships with it disabled
+runcmd:
+  - [systemctl, enable, --now, ssh]

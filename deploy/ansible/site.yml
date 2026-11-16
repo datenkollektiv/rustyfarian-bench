@@ -1,0 +1,9 @@
+---
+# Provisions the bench host; rerun to upgrade. Run through `just pi-provision`.
+- name: Provision the rustyfarian bench host
+  hosts: bench
+  become: true
+  roles:
+    - base
+    - tools
+    - bench

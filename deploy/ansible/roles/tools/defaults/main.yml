@@ -1,0 +1,10 @@
+---
+# Bump a version and its sha256 together; both come from the GitHub release page.
+tools_uv_version: "0.13.8"
+tools_uv_sha256: 74f2f5c6024d397481db228db8fc25eed420db192243f88438c118e7e013e585
+# 4.6.0 matches the laptop end-to-end run; move to 4.7.0 after the Pi gate
+tools_espflash_version: "4.6.0"
+tools_espflash_sha256: 560c690ce28c7fe2b31709eeaf1fcc6717cfa832798b68287dddca1e3a3b65d6
+tools_cache_dir: /var/cache/rustyfarian-bench/downloads
+tools_uv_release: https://github.com/astral-sh/uv/releases/download
+tools_espflash_release: https://github.com/esp-rs/espflash/releases/download
