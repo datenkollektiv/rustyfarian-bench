@@ -34,8 +34,6 @@ from .runner import steps_for
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 # ASCII digits only: `\d` would also match other Unicode digits.
 JOB_ID = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")
-# A board's MAC as espflash prints it; it ends up in a TOML string, so it is matched strictly.
-MAC = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
 # Verdicts and the exit code `submit --wait` (like `run`) ends with; anything else is 1.
 EXIT = {"pass": 0, "unverified": 3, "incomplete": 3}
 # Seconds a job waits for its board; nobody plugs one in at a shared bench.
@@ -204,7 +202,7 @@ def _check_board(raw: Mapping[str, Any]) -> dict[str, Any]:
     checked = {"key": key, "chip": chip, "name": name, "baud": baud, "reset": reset}
     mac = raw.get("mac")
     if mac is not None:
-        if not isinstance(mac, str) or not MAC.fullmatch(mac):
+        if not isinstance(mac, str) or not config.MAC.fullmatch(mac):
             raise ConfigError("board mac: expected the form aa:bb:cc:dd:ee:ff")
         checked["mac"] = mac.lower()
     return checked

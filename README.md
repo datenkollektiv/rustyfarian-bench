@@ -69,8 +69,8 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
 1. Build the example (`commands.build`, or the board's own `build`), so the slow part runs before the board is needed.
 2. Poll serial ports and run `espflash board-info` on each until the board's chip (and optional MAC) answers.
    - A port another session holds is skipped, so two boards can bench side by side.
-   - Pin `mac` when two boards share a chip: the lock is only held while a session reads its port.
-   - `run --unique-board` refuses to guess instead: with two boards of the board's chip attached and no `mac` or `--port`, the run ends with an `error` naming both ports.
+   - Pin `mac` in `bench/bench.local.toml` when two boards share a chip: the lock is only held while a session reads its port.
+   - `run --unique-board` refuses to guess instead: with two boards of the board's chip attached and no pinned `mac` or `--port`, the run ends with an `error` naming both ports.
    - Under `--unique-board`, a busy or silent port blocks the decision until it resolves or `--detect-timeout` ends it.
    - A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash.
    - Such a board is found by its USB identity when it declares `usb_id = "vid:pid"`, plus `usb_serial` to tell two identical bridges apart.
@@ -109,6 +109,7 @@ The runner never uses `espflash monitor` (without a TTY it leaves a USB-JTAG chi
 ```
 bench/
 ├── bench.toml        commands + boards
+├── bench.local.toml  optional, git-ignored: per-machine board values
 └── s3/
     ├── b3f.toml      one scenario
     ├── logs/         captured output
@@ -126,7 +127,7 @@ image = ["just", "save-image", "{example}", "{image}"]   # optional: only `submi
 [boards.s3]
 chip = "esp32s3"
 name = "CrowPanel 1.28\" HMI (ESP32-S3)"
-# mac = "dc:54:75:..."   # pin one physical board
+# mac = "dc:54:75:aa:bb:cc"   # pin one physical board: put it in bench.local.toml, see below
 # checks = ["pulse", "rainbow"]   # run these first, in this order; the rest follow by name
 
 [boards.avr]
@@ -139,6 +140,25 @@ reset = "dtr"                                    # auto-reset bridge; default "r
 build = ["just", "build-avr-bin", "{example}"]  # per-board commands override [commands]
 flash = ["just", "flash-avr-bin", "{example}", "{port}"]
 ```
+
+### Per-machine board settings
+
+Two boards of one chip are told apart by `mac`, and a MAC differs on every machine.
+Put it in the optional `bench/bench.local.toml` and add `bench/bench.local.toml` to `.gitignore`:
+
+```toml
+[boards.s3]
+mac = "dc:54:75:aa:bb:cc"   # yours: `just detect` shows it
+```
+
+- Allowed keys per board are `mac`, `usb_id`, `usb_serial` and `baud`; any other key, an undefined board or a top-level table other than `boards` is a load error naming the file.
+- A local value wins over the one in `bench.toml`; keys it does not set keep their committed value.
+- `bench.toml` must be valid on its own; an error that only appears after merging names `bench.local.toml`.
+- `bench.local.toml` is not a scenario, and `bench/<board>/*.toml` never matches it.
+- A `mac` in either file must have the form `aa:bb:cc:dd:ee:ff`; anything else is a load error, not a run that never finds its board.
+- `just detect` shows the MAC of each attached board.
+- `submit` sends only the `mac` and `baud` from `bench.toml`: local values describe this machine, not the bench host.
+- A run says "pinned by bench.local.toml" when the file supplied the MAC, and the wrong-board warning names the pinned MAC and its file.
 
 `image` is optional and consumer-owned, like `build` and `flash`.
 It writes the flash image `submit` uploads (the whole flash from `0x0`: bootloader, partition table and app) to `{image}`; a board's own `image` overrides `[commands]`.
@@ -358,9 +378,9 @@ Ctrl-C while waiting leaves the job running and exits 130; an unreachable host e
 
 One worker runs the jobs of the whole host one at a time, in arrival order, so a probe can never touch a board mid-flash.
 Each job runs the unchanged `run <example> --unattended --no-build --no-twins --detect-timeout N --unique-board` as a child process in a repo the server writes itself.
-The board is found by chip detection, and a `mac` in the client's board table is carried and pinned in that repo.
+The board is found by chip detection, and a `mac` in the client's `bench.toml` (never one from `bench.local.toml`) is carried and pinned in that repo.
 An unpinned job refuses to guess between boards of the same chip, so with two attached it ends as `error` naming both ports; a silent stray port also blocks an unpinned job until `--detect-timeout`.
-The `mac` must have the form `aa:bb:cc:dd:ee:ff`; `submit` rejects a malformed one before it builds, and `serve` answers 422.
+The `mac` must have the form `aa:bb:cc:dd:ee:ff`; loading the config rejects a malformed one before `submit` builds, and `serve` answers 422.
 The flash is `espflash write-bin` of the image at `0x0`, so nothing from the client's `bench.toml` runs on the host except the scenario's steps.
 
 A scenario is refused, by `submit` before it builds and by `serve` again on arrival, when it has:

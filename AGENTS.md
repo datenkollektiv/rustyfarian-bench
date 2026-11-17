@@ -11,7 +11,7 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 ## Architecture
 
 - `cli.py` — `run`, `list`, `detect`, `submit`, `serve` subcommands (entry point `rustyfarian-bench`).
-- `config.py` — loads `bench/bench.toml` plus `bench/<board>/*.toml` scenarios.
+- `config.py` — loads `bench/bench.toml`, the optional git-ignored `bench/bench.local.toml` (per-machine `mac`, `usb_id`, `usb_serial`, `baud`) and `bench/<board>/*.toml` scenarios.
 - `device.py` — polls serial ports and asks `espflash board-info` which chip answers.
 - `serial_lines.py` — background pyserial reader that reopens the port across USB re-enumeration.
 - `steps.py` — judges `expect` / `duration` / `confirm` steps against the line stream.

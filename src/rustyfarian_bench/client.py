@@ -180,10 +180,6 @@ def _submit(args: argparse.Namespace) -> int:
     if reasons := remote.remote_violations(scenario):
         ui.warn(f"{scenario.board.key}/{scenario.name} cannot run remotely: " + "; ".join(reasons))
         return 2
-    if (mac := scenario.board.mac) and not remote.MAC.fullmatch(mac):
-        raise ConfigError(
-            f"board {scenario.board.name}: mac {mac!r} is not of the form aa:bb:cc:dd:ee:ff"
-        )
     if args.image:
         try:
             image = args.image.read_bytes()
@@ -201,11 +197,11 @@ def _submit(args: argparse.Namespace) -> int:
         "key": board.key,
         "chip": board.chip,
         "name": board.name,
-        "baud": board.baud,
+        "baud": board.committed_baud,
         "reset": board.reset,
     }
-    if board.mac:
-        board_meta["mac"] = board.mac
+    if board.committed_mac:
+        board_meta["mac"] = board.committed_mac
     body = {
         "board": board_meta,
         "check": scenario.name,

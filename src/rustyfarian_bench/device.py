@@ -190,6 +190,11 @@ SLEEP_HINT = (
 )
 
 
+def _detected(board: Board, device: Device) -> str:
+    pinned = ", pinned by bench.local.toml" if board.mac_source else ""
+    return f"Detected {device.chip} on {device.port} (MAC {device.mac}{pinned})"
+
+
 def wait_for(
     board: Board,
     port: str | None = None,
@@ -211,7 +216,7 @@ def wait_for(
     A port held by another process (a parallel session) is skipped while it stays
     held and never counts as a silent board; with `port` given, that means waiting.
     The lock is only held while a session reads its port, so two boards with the
-    same chip should be told apart by `mac` in bench.toml.
+    same chip should be told apart by `mac` in bench/bench.local.toml.
     A port where no chip answers is retried: a sleeping or resetting board
     re-enumerates and may answer on a later attempt.
 
@@ -256,7 +261,7 @@ def wait_for(
                 if guard:
                     matched[p] = device
                     continue
-                info(f"Detected {device.chip} on {device.port} (MAC {device.mac})")
+                info(_detected(board, device))
                 return device
             if error == BUSY:
                 if p not in busy:
@@ -268,9 +273,14 @@ def wait_for(
                 silent.pop(p, None)
             if device:
                 wrong_chip.add(p)
+                pin = (
+                    f"; pinned MAC {board.mac} ({board.mac_source or 'bench.toml'})"
+                    if board.mac
+                    else ""
+                )
                 warn(
                     f"{p}: found {device.chip} (MAC {device.mac}), "
-                    f"expected {board.name} — swap the board"
+                    f"expected {board.name}{pin} — swap the board"
                 )
                 continue
             misses += 1
@@ -283,11 +293,11 @@ def wait_for(
         if len(matched) >= 2:
             raise AmbiguousBoard(
                 f"{len(matched)} {board.chip} boards attached ({', '.join(sorted(matched))}); "
-                "pin one with `mac` in bench.toml"
+                "pin one with `mac` in bench/bench.local.toml"
             )
         if len(matched) == 1 and all(p in matched or p in wrong_chip for p in ports):
             (device,) = matched.values()
-            info(f"Detected {device.chip} on {device.port} (MAC {device.mac})")
+            info(_detected(board, device))
             return device
         if not ports and not asked:
             info(f"Please plug in the test device: {board.name}")

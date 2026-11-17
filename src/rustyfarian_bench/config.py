@@ -5,6 +5,9 @@ Layout in the consumer repo:
     bench/bench.toml          commands and boards
     bench/<board>/<check>.toml  one scenario: examples run in order, shared steps
 
+`bench/bench.local.toml` (optional, git-ignored) overrides a few per-machine board values,
+such as `mac`: see `LOCAL_BOARD_KEYS`.
+
 A board's optional `checks` list runs those checks first, in that order; the rest follow by name.
 """
 
@@ -51,7 +54,18 @@ class Board:
     # the port is found by it, so `--port` is not needed.
     usb_id: str | None = None
     usb_serial: str | None = None
+    # File that supplied `mac` when it was not bench.toml; for messages only.
+    mac_source: str | None = None
+    # The `mac` and `baud` from bench.toml, never local ones: what `submit` sends.
+    committed_mac: str | None = None
+    committed_baud: int = 115_200
 
+
+# Board keys `bench/bench.local.toml` may set: values that differ between machines.
+LOCAL_BOARD_KEYS = frozenset({"mac", "usb_id", "usb_serial", "baud"})
+
+# A board's MAC as espflash prints it; it ends up in a TOML string, so it is matched strictly.
+MAC = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
 
 # Placeholders a probe command or a prompt may use besides the names earlier steps captured.
 PROBE_FIELDS = frozenset({"port", "example", "board", "chip", "mac"})
@@ -484,7 +498,15 @@ def _board_command(raw: dict[str, Any], key: str, where: str, allowed: set[str])
     return _command(raw[key], f"{where}.{key}", allowed) if key in raw else ()
 
 
-def _parse_board(key: str, raw: Any, where: str) -> Board:
+def _parse_board(
+    key: str,
+    raw: Any,
+    where: str,
+    *,
+    mac_source: str | None = None,
+    committed: Board | None = None,
+) -> Board:
+    # `committed`: the board as bench.toml alone defines it; None when parsing bench.toml itself.
     if not isinstance(raw, dict):
         raise ConfigError(f"{where}: must be a table")
     chip = _text(raw, "chip", where)
@@ -503,20 +525,27 @@ def _parse_board(key: str, raw: Any, where: str) -> Board:
         raise ConfigError(f"{where}.usb_serial: needs usb_id")
     if usb_id is not None and detect:
         raise ConfigError(f"{where}.usb_id: only for boards with detect = false")
+    mac = _text(raw, "mac", where)
+    if mac is not None and not MAC.fullmatch(mac):
+        raise ConfigError(f"{where}.mac: expected the form aa:bb:cc:dd:ee:ff")
+    baud = _baud(raw, where)
     return Board(
         key=key,
         chip=chip,
         name=key if name is None else name,
-        mac=_text(raw, "mac", where),
+        mac=mac,
         checks=checks,
         build=_board_command(raw, "build", where, {"example"}),
         flash=_board_command(raw, "flash", where, {"example", "port"}),
         image=_board_command(raw, "image", where, {"example", "image"}),
         detect=detect,
-        baud=_baud(raw, where),
+        baud=baud,
         reset=_reset(raw, where),
         usb_id=None if usb_id is None else usb_id.lower(),
         usb_serial=usb_serial,
+        mac_source=mac_source if mac is not None else None,
+        committed_mac=mac if committed is None else committed.committed_mac,
+        committed_baud=baud if committed is None else committed.committed_baud,
     )
 
 
@@ -542,6 +571,24 @@ def _table(data: dict[str, Any], key: str, where: str) -> dict[str, Any]:
     return value
 
 
+def _local_overrides(path: Path, committed: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = _read_toml(path)
+    if extra := sorted(set(raw) - {"boards"}):
+        raise ConfigError(f"{path}: only a [boards] table is allowed, found {extra}")
+    allowed = sorted(LOCAL_BOARD_KEYS)
+    overrides: dict[str, dict[str, Any]] = {}
+    for key, table in _table(raw, "boards", str(path)).items():
+        where = f"{path}: boards.{key}"
+        if key not in committed:
+            raise ConfigError(f"{where}: board is not defined in bench.toml")
+        if not isinstance(table, dict):
+            raise ConfigError(f"{where}: must be a table")
+        if bad := sorted(set(table) - LOCAL_BOARD_KEYS):
+            raise ConfigError(f"{where}: key {bad} not allowed here; allowed keys: {allowed}")
+        overrides[key] = table
+    return overrides
+
+
 def load(repo: Path) -> BenchConfig:
     root = repo / "bench"
     main = root / "bench.toml"
@@ -561,10 +608,19 @@ def load(repo: Path) -> BenchConfig:
         else ()
     )
 
-    boards = {
-        key: _parse_board(key, b, f"boards.{key}")
-        for key, b in _table(data, "boards", str(main)).items()
-    }
+    committed = _table(data, "boards", str(main))
+    # bench.toml must be valid on its own: other machines have no local file.
+    boards = {key: _parse_board(key, b, f"boards.{key}") for key, b in committed.items()}
+    local_path = root / "bench.local.toml"
+    if local_path.is_file():
+        for key, values in _local_overrides(local_path, committed).items():
+            boards[key] = _parse_board(
+                key,
+                {**committed[key], **values},
+                f"{local_path}: boards.{key}",
+                mac_source="bench.local.toml" if "mac" in values else None,
+                committed=boards[key],
+            )
 
     scenarios = []
     for key, board in sorted(boards.items()):

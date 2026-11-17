@@ -1131,3 +1131,329 @@ def test_global_image_placeholders_are_validated_at_load(
 def test_board_image_placeholders_are_validated_at_load(tmp_path: Path, line: str) -> None:
     with pytest.raises(ConfigError, match=r"s3\.image"):
         load_scenario(tmp_path, scenario('expect = "a"'), BENCH + line + "\n")
+
+
+# bench/bench.local.toml: per-machine board values, merged over the committed bench.toml.
+
+LOCAL = "bench.local.toml"
+TWO_BOARDS = (
+    BENCH + '\n[boards.c3]\nchip = "esp32c3"\nname = "C3 bench"\nmac = "11:11:11:11:11:11"\n'
+)
+NO_DETECT = BENCH + "detect = false\n"
+
+
+def load_local(
+    repo: Path, local: str | None, bench: str = BENCH, scenario_text: str = B3F
+) -> BenchConfig:
+    files = {"bench.toml": bench, "s3/b3f.toml": scenario_text}
+    if local is not None:
+        files[LOCAL] = local
+    return load(write(repo, files))
+
+
+def test_an_absent_local_file_changes_nothing(tmp_path: Path) -> None:
+    board = load_local(tmp_path, None).boards["s3"]
+
+    assert (board.mac, board.mac_source) == (None, None)
+    assert board.name == "CrowPanel"
+
+
+@pytest.mark.parametrize(
+    ("bench", "line", "field", "expected"),
+    [
+        (BENCH, 'mac = "aa:bb:cc:dd:ee:ff"', "mac", "aa:bb:cc:dd:ee:ff"),
+        (NO_DETECT, 'usb_id = "0403:6001"', "usb_id", "0403:6001"),
+        (NO_DETECT + 'usb_id = "0403:6001"\n', 'usb_serial = "AQ01L7M0"', "usb_serial", "AQ01L7M0"),
+        (BENCH, "baud = 9600", "baud", 9600),
+    ],
+    ids=["mac", "usb_id", "usb_serial", "baud"],
+)
+def test_each_allowed_local_key_overrides_the_board(
+    tmp_path: Path, bench: str, line: str, field: str, expected: object
+) -> None:
+    board = load_local(tmp_path, f"[boards.s3]\n{line}\n", bench).boards["s3"]
+
+    assert getattr(board, field) == expected
+
+
+def test_the_allowed_local_keys_are_exactly_these() -> None:
+    from rustyfarian_bench.config import LOCAL_BOARD_KEYS
+
+    assert {"mac", "usb_id", "usb_serial", "baud"} == LOCAL_BOARD_KEYS
+
+
+def test_a_local_table_merges_key_by_key(tmp_path: Path) -> None:
+    bench = BENCH + 'mac = "11:11:11:11:11:11"\nbaud = 57600\n'
+
+    board = load_local(tmp_path, '[boards.s3]\nmac = "22:22:22:22:22:22"\n', bench).boards["s3"]
+
+    assert board.mac == "22:22:22:22:22:22"
+    assert board.baud == 57600  # not mentioned locally, kept
+    assert (board.chip, board.name) == ("esp32s3", "CrowPanel")
+
+
+def test_a_local_mac_beats_the_committed_one_and_is_attributed(tmp_path: Path) -> None:
+    board = load_local(tmp_path, '[boards.c3]\nmac = "22:22:22:22:22:22"\n', TWO_BOARDS).boards[
+        "c3"
+    ]
+
+    assert board.mac == "22:22:22:22:22:22"
+    assert board.mac_source == "bench.local.toml"
+
+
+def test_other_boards_are_untouched(tmp_path: Path) -> None:
+    cfg = load_local(tmp_path, '[boards.s3]\nmac = "22:22:22:22:22:22"\n', TWO_BOARDS)
+
+    assert cfg.boards["c3"].mac == "11:11:11:11:11:11"
+    assert cfg.boards["c3"].mac_source is None
+    assert cfg.boards["s3"].mac_source == "bench.local.toml"
+
+
+def test_mac_source_stays_unset_unless_the_local_file_supplied_the_mac(tmp_path: Path) -> None:
+    cfg = load_local(tmp_path, "[boards.c3]\nbaud = 9600\n", TWO_BOARDS)
+
+    assert cfg.boards["c3"].mac == "11:11:11:11:11:11"
+    assert cfg.boards["c3"].baud == 9600
+    assert cfg.boards["c3"].mac_source is None
+
+
+def test_an_empty_local_file_and_an_empty_board_table_load(tmp_path: Path) -> None:
+    assert load_local(tmp_path, "").boards["s3"].mac_source is None
+    assert load_local(tmp_path / "b", "[boards.s3]\n").boards["s3"].mac_source is None
+
+
+@pytest.mark.parametrize("key", ["chip", "name", "detect", "reset", "checks", "flash", "image"])
+def test_a_forbidden_local_key_is_a_config_error_naming_the_file_and_key(
+    tmp_path: Path, key: str
+) -> None:
+    with pytest.raises(ConfigError, match=rf"bench\.local\.toml.*{key}|{key}.*bench\.local\.toml"):
+        load_local(tmp_path, f'[boards.s3]\n{key} = "x"\n')
+
+
+def test_an_unknown_local_key_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml.*macc|macc.*bench\.local\.toml"):
+        load_local(tmp_path, '[boards.s3]\nmacc = "aa:bb:cc:dd:ee:ff"\n')
+
+
+def test_the_error_for_a_bad_local_key_lists_the_allowed_keys(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="usb_serial") as exc:
+        load_local(tmp_path, '[boards.s3]\nchip = "x"\n')
+
+    assert all(k in str(exc.value) for k in ("mac", "usb_id", "usb_serial", "baud"))
+
+
+def test_a_local_board_that_bench_toml_does_not_define_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml") as exc:
+        load_local(tmp_path, '[boards.nope]\nmac = "aa:bb:cc:dd:ee:ff"\n')
+
+    assert "nope" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "local",
+    ['[commands]\nbuild = ["x"]\n', "x = 1\n[boards.s3]\nbaud = 9600\n", "boards = 5\n"],
+    ids=["other-table", "scalar", "boards-not-a-table"],
+)
+def test_only_a_boards_table_is_allowed_at_the_top_of_the_local_file(
+    tmp_path: Path, local: str
+) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml"):
+        load_local(tmp_path, local)
+
+
+def test_a_board_value_that_is_not_a_table_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml") as exc:
+        load_local(tmp_path, "[boards]\ns3 = 'x'\n")
+
+    assert "s3" in str(exc.value)
+
+
+def test_a_local_syntax_error_names_the_file(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml"):
+        load_local(tmp_path, "[boards.s3\n")
+
+
+def test_a_local_file_that_is_not_utf8_names_the_file(tmp_path: Path) -> None:
+    repo = load_local_repo(tmp_path)
+    (repo / "bench" / LOCAL).write_bytes(b"\xff\xfe\x00bad")
+
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml"):
+        load(repo)
+
+
+def load_local_repo(repo: Path) -> Path:
+    return write(repo, {"bench.toml": BENCH, "s3/b3f.toml": B3F})
+
+
+@pytest.mark.parametrize(
+    ("line", "field"),
+    [
+        ("mac = 5", "mac"),
+        ('baud = "fast"', "baud"),
+        ("baud = 0", "baud"),
+        ("baud = true", "baud"),
+        ("usb_id = 5", "usb_id"),
+    ],
+)
+def test_a_wrongly_typed_local_value_is_a_config_error_naming_file_and_field(
+    tmp_path: Path, line: str, field: str
+) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml") as exc:
+        load_local(tmp_path, f"[boards.s3]\n{line}\n", NO_DETECT)
+
+    assert field in str(exc.value)
+
+
+def test_a_local_usb_serial_without_a_usb_id_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml") as exc:
+        load_local(tmp_path, '[boards.s3]\nusb_serial = "AQ01L7M0"\n', NO_DETECT)
+
+    assert "usb_serial" in str(exc.value)
+
+
+def test_a_local_usb_serial_loads_beside_a_committed_usb_id(tmp_path: Path) -> None:
+    bench = NO_DETECT + 'usb_id = "0403:6001"\n'
+
+    board = load_local(tmp_path, '[boards.s3]\nusb_serial = "AQ01L7M0"\n', bench).boards["s3"]
+
+    assert (board.usb_id, board.usb_serial) == ("0403:6001", "AQ01L7M0")
+
+
+def test_a_local_usb_id_on_a_detected_board_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml") as exc:
+        load_local(tmp_path, '[boards.s3]\nusb_id = "0403:6001"\n')
+
+    assert "usb_id" in str(exc.value)
+
+
+def test_a_local_mac_on_a_board_without_detection_is_accepted(tmp_path: Path) -> None:
+    board = load_local(tmp_path, '[boards.s3]\nmac = "aa:bb:cc:dd:ee:ff"\n', NO_DETECT).boards["s3"]
+
+    assert board.mac == "aa:bb:cc:dd:ee:ff"
+
+
+@pytest.mark.parametrize("mac", ["not-a-mac", "dc:54:75", "aa:bb:cc:dd:ee:ff:00", "aabbccddeeff"])
+def test_a_malformed_committed_mac_is_a_config_error_naming_the_board(
+    tmp_path: Path, mac: str
+) -> None:
+    with pytest.raises(ConfigError, match=r"boards\.s3\.mac.*aa:bb:cc:dd:ee:ff") as exc:
+        load_local(tmp_path, None, BENCH + f'mac = "{mac}"\n')
+
+    assert "bench.local.toml" not in str(exc.value)
+
+
+def test_a_mac_with_a_trailing_newline_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"boards\.s3\.mac"):
+        load_local(tmp_path, None, BENCH + 'mac = "aa:bb:cc:dd:ee:ff\\n"\n')
+
+
+def test_the_abbreviated_mac_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"boards\.s3\.mac"):
+        load_local(tmp_path, None, BENCH + 'mac = "dc:54:75:..."\n')
+
+
+def test_a_malformed_local_mac_is_a_config_error_naming_the_local_file(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"bench\.local\.toml.*boards\.s3\.mac") as exc:
+        load_local(tmp_path, '[boards.s3]\nmac = "dc:54:75:..."\n')
+
+    assert "aa:bb:cc:dd:ee:ff" in str(exc.value)
+
+
+def test_an_uppercase_mac_is_accepted_in_either_file(tmp_path: Path) -> None:
+    committed = load_local(tmp_path, None, BENCH + 'mac = "AA:BB:CC:DD:EE:FF"\n').boards["s3"]
+    local = load_local(tmp_path / "b", '[boards.s3]\nmac = "AA:BB:CC:DD:EE:FF"\n').boards["s3"]
+
+    assert committed.mac == "AA:BB:CC:DD:EE:FF"
+    assert local.mac == "AA:BB:CC:DD:EE:FF"
+
+
+def test_the_committed_mac_equals_the_mac_without_a_local_file(tmp_path: Path) -> None:
+    board = load_local(tmp_path, None, TWO_BOARDS).boards["c3"]
+
+    assert board.committed_mac == board.mac == "11:11:11:11:11:11"
+
+
+def test_the_committed_mac_survives_a_local_override(tmp_path: Path) -> None:
+    board = load_local(tmp_path, '[boards.c3]\nmac = "22:22:22:22:22:22"\n', TWO_BOARDS).boards[
+        "c3"
+    ]
+
+    assert board.mac == "22:22:22:22:22:22"
+    assert board.committed_mac == "11:11:11:11:11:11"
+
+
+def test_a_local_only_mac_leaves_the_committed_mac_unset(tmp_path: Path) -> None:
+    board = load_local(tmp_path, '[boards.s3]\nmac = "22:22:22:22:22:22"\n').boards["s3"]
+
+    assert board.mac == "22:22:22:22:22:22"
+    assert board.committed_mac is None
+
+
+def test_the_committed_mac_is_unset_when_nothing_defines_one(tmp_path: Path) -> None:
+    assert load_local(tmp_path, None).boards["s3"].committed_mac is None
+
+
+def test_the_committed_baud_equals_the_baud_without_a_local_file(tmp_path: Path) -> None:
+    board = load_local(tmp_path, None, BENCH + "baud = 57600\n").boards["s3"]
+
+    assert board.committed_baud == board.baud == 57_600
+
+
+def test_the_committed_baud_survives_a_local_override(tmp_path: Path) -> None:
+    board = load_local(tmp_path, "[boards.s3]\nbaud = 9600\n", BENCH + "baud = 57600\n").boards[
+        "s3"
+    ]
+
+    assert board.baud == 9600
+    assert board.committed_baud == 57_600
+
+
+def test_the_committed_baud_is_the_default_when_only_the_local_file_sets_one(
+    tmp_path: Path,
+) -> None:
+    board = load_local(tmp_path, "[boards.s3]\nbaud = 9600\n").boards["s3"]
+
+    assert board.baud == 9600
+    assert board.committed_baud == 115_200
+
+
+def test_the_committed_baud_is_the_default_when_nothing_sets_one(tmp_path: Path) -> None:
+    board = load_local(tmp_path, None).boards["s3"]
+
+    assert board.committed_baud == board.baud == 115_200
+
+
+def test_a_committed_bench_toml_that_is_invalid_alone_still_names_bench_toml(
+    tmp_path: Path,
+) -> None:
+    bench = BENCH.replace('chip = "esp32s3"', "chip = 5")
+
+    with pytest.raises(ConfigError) as exc:
+        load_local(tmp_path, '[boards.s3]\nmac = "aa:bb:cc:dd:ee:ff"\n', bench)
+
+    assert "bench.local.toml" not in str(exc.value)
+    assert "s3" in str(exc.value)
+
+
+def test_a_committed_invalid_board_is_not_rescued_by_the_local_file(tmp_path: Path) -> None:
+    bench = BENCH + 'usb_id = "0403:6001"\n'  # usb_id on a detected board
+
+    with pytest.raises(ConfigError, match="usb_id") as exc:
+        load_local(tmp_path, "[boards.s3]\nbaud = 9600\n", bench)
+
+    assert "bench.local.toml" not in str(exc.value)
+
+
+def test_a_committed_error_is_reported_before_a_local_one(tmp_path: Path) -> None:
+    bench = BENCH + 'usb_id = "0403:6001"\n'  # usb_id on a detected board
+
+    with pytest.raises(ConfigError, match="usb_id") as exc:
+        load_local(tmp_path, "[boards.s3]\nchip = 'esp32c3'\n", bench)
+
+    assert "bench.local.toml" not in str(exc.value)
+
+
+def test_the_local_file_is_not_a_scenario(tmp_path: Path) -> None:
+    cfg = load_local(tmp_path, "[boards.s3]\nbaud = 9600\n")
+
+    assert [s.name for s in cfg.scenarios] == ["b3f"]
