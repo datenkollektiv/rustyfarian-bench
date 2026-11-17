@@ -341,8 +341,8 @@ Then the real test, a consumer's check run on the Pi:
 just pi-submit rustyfarian-network c3 hal_c3_connect_async --wait
 ```
 
-That builds the image through the consumer's `image` command in its `bench.toml`.
-A consumer without one, as rustyfarian-network is today, needs a prebuilt merged image instead:
+That builds the image through the consumer's `image` command in its `bench.toml`; rustyfarian-network's `just save-image` is a working example.
+A consumer without one needs a prebuilt merged image instead:
 
 ```bash
 just pi-submit rustyfarian-network c3 hal_c3_connect_async --wait --image /path/to/hal_c3_connect_async.bin
