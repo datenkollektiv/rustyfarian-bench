@@ -11,6 +11,8 @@ CLAUDE.md
 memory/
 tmp/
 release/
+# the session handoff note, local only
+continue-here.md
 deploy/ansible/.collections/
 deploy/ansible/inventory.yml
 # SOPS + age (convention v2), all local only in this public repo, encrypted or not:
