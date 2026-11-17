@@ -253,9 +253,9 @@ def test_a_mac_that_is_not_text_is_refused(tmp_path: Path) -> None:
 
 
 def test_the_mac_pattern_matches_the_whole_string_in_either_case() -> None:
-    assert remote.MAC.fullmatch("aa:bb:cc:dd:ee:ff")
-    assert remote.MAC.fullmatch("AA:BB:CC:DD:EE:FF")
-    assert not remote.MAC.fullmatch("aa:bb:cc:dd:ee:ff\n")
+    assert config.MAC.fullmatch("aa:bb:cc:dd:ee:ff")
+    assert config.MAC.fullmatch("AA:BB:CC:DD:EE:FF")
+    assert not config.MAC.fullmatch("aa:bb:cc:dd:ee:ff\n")
 
 
 def _assert_refused(tmp_path: Path, match: str, **kw: Any) -> None:
@@ -1072,3 +1072,10 @@ def test_a_session_runs_write_bin_of_the_uploaded_image_at_zero_with_the_chip(
     rows = remote._rows(job_dir, "c6")
     assert [(r["example"], r["verdict"]) for r in rows] == [("ex1", "pass")]
     assert len(world.opened) == 1
+
+
+def test_a_prepared_job_directory_has_no_local_board_file(tmp_path: Path) -> None:
+    job = create_job(tmp_path, meta(board=board_meta(mac="aa:bb:cc:dd:ee:ff")), SCENARIO, IMAGE)
+
+    assert not list((tmp_path / job.id).rglob("bench.local.toml"))
+    assert config.load(tmp_path / job.id).boards["c6"].mac_source is None

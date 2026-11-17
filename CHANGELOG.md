@@ -8,11 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An optional, git-ignored `bench/bench.local.toml` sets per-machine board values (`mac`, `usb_id`, `usb_serial`, `baud`), so a consumer no longer commits a MAC that is wrong on every other machine; the detection line and the wrong-board warning name the pin; `submit` never sends a value from it.
 - `deploy/` provisions a Raspberry Pi 5 as the remote bench host: a cloud-init seed (`just pi-seed`) and an Ansible playbook (`just pi-provision`) that installs `serve` as a hardened systemd service with TLS and tokens.
 - Bench host secrets (CA, tokens, Wi-Fi) live SOPS-encrypted in the gitignored `shared-secrets/`, handled by `just secrets-edit`, `decrypt`, `encrypt`, `secrets-updatekeys`, `pi-ca-init` and `pi-ca-cert`.
 - `just verify` runs `secrets-check` first, which fails on any unencrypted file in `shared-secrets/`.
 - `just doctor` checks every bench host prerequisite and names the fix for each gap; `--deep` also decrypts to check the key and the secrets.
 - `just pi-check` and `just pi-idempotent` check a provisioned bench; `just deploy-lint` lints `deploy/`, also as a separate CI workflow.
+
+### Changed
+
+- A board `mac` in `bench.toml` must have the form `aa:bb:cc:dd:ee:ff`, so a typo is a load error instead of a detection that waits forever.
 
 ## [0.6.0] - 2026-11-15
 

@@ -52,11 +52,16 @@ URL = "http://bench.test"
 JOB = "20260101-000000-abcdef"
 
 
-def repo(tmp_path: Path, bench: str = BENCH, **checks: str) -> Path:
-    """A consumer repo with board c6 and one scenario `connect` unless `checks` say otherwise."""
+def repo(tmp_path: Path, bench: str = BENCH, local: str | None = None, **checks: str) -> Path:
+    """A consumer repo with board c6 and one scenario `connect` unless `checks` say otherwise.
+
+    `local` is the text of an optional `bench/bench.local.toml`.
+    """
     root = tmp_path / "consumer"
     (root / "bench/c6").mkdir(parents=True)
     (root / "bench/bench.toml").write_text(bench)
+    if local is not None:
+        (root / "bench/bench.local.toml").write_text(local)
     for name, text in (checks or {"connect": SCENARIO}).items():
         (root / f"bench/c6/{name}.toml").write_text(text)
     return root
@@ -186,6 +191,80 @@ def test_a_malformed_local_mac_is_exit_2_before_anything_is_built(
     assert commands.calls == []  # neither build nor image ran
     assert wire.calls == []
     assert "mac" in capsys.readouterr().out
+
+
+def test_the_committed_mac_is_uploaded_not_the_local_one(
+    tmp_path: Path, wire: Wire, commands: Commands
+) -> None:
+    bench = BENCH.replace('name = "C6 bench"', 'name = "C6 bench"\nmac = "11:22:33:44:55:66"')
+    local = '[boards.c6]\nmac = "AA:BB:CC:DD:EE:FF"\n'
+
+    assert submit(repo(tmp_path, bench, local)) == 0
+
+    assert wire.posted["board"]["mac"] == "11:22:33:44:55:66"
+
+
+def test_a_local_only_mac_is_not_uploaded(tmp_path: Path, wire: Wire, commands: Commands) -> None:
+    local = '[boards.c6]\nmac = "aa:bb:cc:dd:ee:ff"\n'
+
+    assert submit(repo(tmp_path, local=local)) == 0
+
+    assert "mac" not in wire.posted["board"]
+
+
+def test_the_committed_baud_is_uploaded_not_the_local_one(
+    tmp_path: Path, wire: Wire, commands: Commands
+) -> None:
+    bench = BENCH.replace('name = "C6 bench"', 'name = "C6 bench"\nbaud = 115200')
+    local = "[boards.c6]\nbaud = 9600\n"
+
+    assert submit(repo(tmp_path, bench, local)) == 0
+
+    assert wire.posted["board"]["baud"] == 115_200
+
+
+def test_a_local_only_baud_uploads_the_default_baud(
+    tmp_path: Path, wire: Wire, commands: Commands
+) -> None:
+    local = "[boards.c6]\nbaud = 9600\n"
+
+    assert submit(repo(tmp_path, local=local)) == 0
+
+    assert wire.posted["board"]["baud"] == 115_200
+
+
+def test_a_non_default_committed_baud_is_uploaded_without_a_local_file(
+    tmp_path: Path, wire: Wire, commands: Commands
+) -> None:
+    bench = BENCH.replace('name = "C6 bench"', 'name = "C6 bench"\nbaud = 57600')
+
+    assert submit(repo(tmp_path, bench)) == 0
+
+    assert wire.posted["board"]["baud"] == 57_600
+
+
+def test_a_malformed_mac_in_bench_local_toml_is_exit_2_before_anything_is_built(
+    tmp_path: Path, wire: Wire, commands: Commands, capsys: pytest.CaptureFixture[str]
+) -> None:
+    local = '[boards.c6]\nmac = "not-a-mac"\n'
+
+    assert submit(repo(tmp_path, local=local)) == 2
+
+    assert commands.calls == []
+    assert wire.calls == []
+    assert "mac" in capsys.readouterr().out
+
+
+def test_a_forbidden_key_in_bench_local_toml_is_exit_2_and_nothing_is_built(
+    tmp_path: Path, wire: Wire, commands: Commands, capsys: pytest.CaptureFixture[str]
+) -> None:
+    local = '[boards.c6]\nchip = "esp32s3"\n'
+
+    assert submit(repo(tmp_path, local=local)) == 2
+
+    assert commands.calls == []
+    assert wire.calls == []
+    assert "bench.local.toml" in capsys.readouterr().out
 
 
 def test_the_image_temp_file_is_gone_afterwards(

@@ -72,7 +72,7 @@ class Options:
     twins: bool = True
     # Seconds to wait for the board before the run fails; None waits for it.
     detect_timeout: float | None = None
-    # Refuse to guess between boards of one chip (`mac` in bench.toml pins one).
+    # Refuse to guess between boards of one chip (`mac` in bench.local.toml pins one).
     unique_board: bool = False
 
 

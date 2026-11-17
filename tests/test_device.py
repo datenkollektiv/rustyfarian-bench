@@ -745,3 +745,116 @@ def test_unique_a_matched_port_that_disappears_is_probed_again_when_it_returns(
 
     assert d.port == replugged
     assert log.count(replugged) == 2  # once before it vanished, once after it returned
+
+
+@pytest.fixture
+def infos(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every info and warn line `wait_for` prints, in order."""
+    shown: list[str] = []
+    monkeypatch.setattr(device_mod, "info", shown.append)
+    monkeypatch.setattr(device_mod, "warn", shown.append)
+    return shown
+
+
+MAC = "dc:54:75:c8:12:34"
+
+
+@pytest.mark.parametrize("unique", [False, True])
+@pytest.mark.parametrize(
+    ("mac_source", "pinned"), [("bench.local.toml", True), (None, False)], ids=["local", "none"]
+)
+def test_the_detection_line_names_bench_local_toml_only_when_it_pinned_the_mac(
+    tmp_path: Path, infos: list[str], unique: bool, mac_source: str | None, pinned: bool
+) -> None:
+    (p,) = _ports(tmp_path, "a")
+    board = Board("s3", "esp32s3", "S3", mac=MAC, mac_source=mac_source)
+
+    wait_for(
+        board,
+        ports_fn=lambda: [p],
+        probe_fn=_by_port({p: _s3(p, MAC)}),
+        sleep_fn=lambda _: None,
+        unique=unique,
+    )
+
+    (line,) = [m for m in infos if m.startswith("Detected")]
+    assert MAC in line
+    assert ("pinned by bench.local.toml" in line) is pinned
+
+
+def test_the_detection_line_of_an_unpinned_board_is_unchanged(
+    tmp_path: Path, infos: list[str]
+) -> None:
+    (p,) = _ports(tmp_path, "a")
+
+    wait_for(
+        S3,
+        ports_fn=lambda: [p],
+        probe_fn=_by_port({p: _s3(p, MAC)}),
+        sleep_fn=lambda _: None,
+        unique=True,
+    )
+
+    (line,) = [m for m in infos if m.startswith("Detected")]
+    assert "pinned" not in line
+
+
+@pytest.mark.parametrize(
+    "mac_source", ["bench.local.toml", None], ids=["from-local", "from-committed"]
+)
+def test_the_wrong_mac_warning_names_the_pinned_mac_and_where_it_came_from(
+    tmp_path: Path, infos: list[str], mac_source: str | None
+) -> None:
+    (p,) = _ports(tmp_path, "a")
+    pinned = "00:11:22:33:44:55"
+    board = Board("s3", "esp32s3", "S3", mac=pinned, mac_source=mac_source)
+    clock = FakeClock()
+
+    with pytest.raises(device_mod.NoBoardInTime):
+        wait_for(
+            board,
+            ports_fn=lambda: [p],
+            probe_fn=_by_port({p: _s3(p, MAC)}),
+            sleep_fn=clock.sleep,
+            timeout=5.0,
+            clock=clock,
+        )
+
+    (warning,) = [m for m in infos if "swap the board" in m]
+    assert f"pinned MAC {pinned}" in warning
+    assert (mac_source or "bench.toml") in warning
+    assert ("bench.local.toml" in warning) is (mac_source is not None)
+
+
+def test_the_wrong_chip_warning_has_no_pin_note_without_a_mac(
+    tmp_path: Path, infos: list[str]
+) -> None:
+    (p,) = _ports(tmp_path, "a")
+    clock = FakeClock()
+
+    with pytest.raises(device_mod.NoBoardInTime):
+        wait_for(
+            S3,
+            ports_fn=lambda: [p],
+            probe_fn=_by_port({p: _wrong_chip(p)}),
+            sleep_fn=clock.sleep,
+            timeout=5.0,
+            clock=clock,
+        )
+
+    (warning,) = [m for m in infos if "swap the board" in m]
+    assert "pinned MAC" not in warning
+
+
+@pytest.mark.usefixtures("quiet")
+def test_the_ambiguous_board_hint_points_at_bench_local_toml(tmp_path: Path) -> None:
+    b, a = _ports(tmp_path, "b", "a")
+
+    with pytest.raises(device_mod.AmbiguousBoard, match=r"bench\.local\.toml"):
+        wait_for(
+            S3,
+            ports_fn=lambda: [b, a],
+            probe_fn=_by_port({a: _s3(a), b: _s3(b)}),
+            sleep_fn=lambda _: None,
+            unique=True,
+        )
