@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bench host secrets (CA, tokens, Wi-Fi) live SOPS-encrypted in the gitignored `shared-secrets/`, handled by `just secrets-edit`, `decrypt`, `encrypt`, `secrets-updatekeys`, `pi-ca-init` and `pi-ca-cert`.
 - `just verify` runs `secrets-check` first, which fails on any unencrypted file in `shared-secrets/`.
 - `just doctor` checks every bench host prerequisite and names the fix for each gap; `--deep` also decrypts to check the key and the secrets.
+- `just pi-upgrade` adds `apt full-upgrade` to a provisioning run, refused while a job is unfinished, as is a bumped `espflash` or `uv`; `pi-provision` leaves OS packages to `unattended-upgrades`.
 - `just pi-check` and `just pi-idempotent` check a provisioned bench; `just deploy-lint` lints `deploy/`, also as a separate CI workflow.
 
 ### Changed

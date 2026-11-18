@@ -79,38 +79,13 @@
   changed_when: false
   check_mode: false
 
-- name: Read the service state
-  ansible.builtin.systemd_service:
-    name: rustyfarian-bench
-  register: bench_service
-  changed_when: false
-  check_mode: false
-
-# Read before anything replaces serve's code: a job runs from the installed tool, so an upgrade
-# under it is as bad as a restart. Best effort: the queue lives in memory, but every unfinished
-# job has a job.json that is not "done"; a job submitted during this run is not seen.
-- name: Find unfinished jobs
-  ansible.builtin.command:
-    argv:
-      - python3
-      - -c
-      - |
-        import json, pathlib, sys
-        for p in sorted(pathlib.Path(sys.argv[1]).glob("*/job.json")):
-            if json.loads(p.read_text()).get("status") != "done":
-                print(p.parent.name)
-      - "{{ bench_outbox }}"
-  register: bench_busy
-  changed_when: false
-  check_mode: false
-  when: bench_service.status.ActiveState == 'active'
-
+# the jobs were read by tasks/busy.yml at the start of the play
 - name: Refuse to upgrade under unfinished jobs
   ansible.builtin.assert:
-    that: bench_busy.stdout_lines | default([]) == [] or bench_force_restart | bool
+    that: bench_unfinished == [] or bench_force_restart | bool
     fail_msg: >-
       rustyfarian-bench {{ bench_version }} would replace the code these jobs run from:
-      {{ bench_busy.stdout_lines | default([]) | join(', ') }}. Wait, or rerun with -e bench_force_restart=true.
+      {{ bench_unfinished | join(', ') }}. Wait, or rerun with -e bench_force_restart=true.
     quiet: true
   when: ('rustyfarian-bench ' ~ bench_version) not in bench_tools.stdout_lines
 
@@ -243,9 +218,9 @@
 
 - name: Refuse to end unfinished jobs
   ansible.builtin.assert:
-    that: bench_busy.stdout_lines | default([]) == [] or bench_force_restart | bool
+    that: bench_unfinished == [] or bench_force_restart | bool
     fail_msg: >-
-      serve must restart, but these jobs are not done: {{ bench_busy.stdout_lines | default([]) | join(', ') }}.
+      serve must restart, but these jobs are not done: {{ bench_unfinished | join(', ') }}.
       A restart ends them as `error`; wait, or rerun with -e bench_force_restart=true.
     quiet: true
   when: bench_restart | bool

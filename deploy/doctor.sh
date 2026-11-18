@@ -30,11 +30,10 @@ version_ge() {
         exit 0 }'
 }
 
-# sops' own default key files, in the order sops looks at them
-default_key_files=(
-    "${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt"
-    "$HOME/Library/Application Support/sops/age/keys.txt"
-)
+# the one default key file sops reads: macOS ignores ~/.config unless XDG_CONFIG_HOME is set
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then default_key_file="$XDG_CONFIG_HOME/sops/age/keys.txt"
+elif [ "$(uname)" = Darwin ]; then default_key_file="$HOME/Library/Application Support/sops/age/keys.txt"
+else default_key_file="$HOME/.config/sops/age/keys.txt"; fi
 
 section "Tools on this machine"
 for tool in uv curl ssh python3; do
@@ -59,7 +58,7 @@ if [ -n "${SOPS_AGE_KEY_CMD:-}" ]; then key_source=SOPS_AGE_KEY_CMD
 elif [ -n "${SOPS_AGE_KEY_FILE:-}" ]; then key_source=SOPS_AGE_KEY_FILE
 elif [ -n "${SOPS_AGE_KEY:-}" ]; then key_source=SOPS_AGE_KEY
 else
-    for f in "${default_key_files[@]}"; do [ -f "$f" ] && { key_source=$f; break; }; done
+    [ -f "$default_key_file" ] && key_source=$default_key_file
 fi
 if [ -n "$key_source" ]; then ok "key source: $key_source"
 else bad "no age key source for sops" \
@@ -75,7 +74,7 @@ secret_keys() {
     [ -n "${SOPS_AGE_KEY:-}" ] && printf '%s\n' "$SOPS_AGE_KEY"
     [ -n "${SOPS_AGE_KEY_FILE:-}" ] && [ -r "$SOPS_AGE_KEY_FILE" ] && cat "$SOPS_AGE_KEY_FILE"
     [ -n "${SOPS_AGE_KEY_CMD:-}" ] && sh -c "$SOPS_AGE_KEY_CMD"
-    for f in "${default_key_files[@]}"; do [ -r "$f" ] && cat "$f"; done
+    [ -r "$default_key_file" ] && cat "$default_key_file"
     return 0
 }
 if ! $deep; then

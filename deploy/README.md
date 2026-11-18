@@ -238,11 +238,13 @@ Then point Ansible at the Pi and run it:
 ```bash
 cp deploy/ansible/inventory.example.yml deploy/ansible/inventory.yml   # once; gitignored
 $EDITOR deploy/ansible/inventory.yml                                    # host, user, bench_fqdn, LAN CIDR
-just pi-provision
+just pi-upgrade
 ```
 
-`pi-provision` runs `just deploy-lint` first, then `site.yml`; extra arguments go to `ansible-playbook`.
-`just pi-provision --check --diff` shows drift on a provisioned Pi; on a fresh one it stops early, since nothing it reads exists yet.
+`pi-provision` and `pi-upgrade` run `just deploy-lint` first, then `site.yml`; extra arguments go to `ansible-playbook`.
+`pi-upgrade` is `pi-provision` plus `apt full-upgrade`, so a fresh image starts current; later runs leave the OS packages to `unattended-upgrades` unless you upgrade on purpose.
+Both refresh the apt lists when they are older than an hour, so a fresh or long-off image does not fail on package versions the mirror has dropped.
+`just pi-provision --check --diff` previews drift on a provisioned Pi without changing it; on a fresh one it stops early, since nothing it reads exists yet.
 Ansible needs Python 3.13 or newer on the controller: `uvx` fetches it, nothing to install.
 
 ```yaml
@@ -270,11 +272,12 @@ The certificate lasts 825 days and is reissued when the name changes or less tha
 
 **`base`** — a calm, locked-down host:
 
-- `apt full-upgrade`, then `unattended-upgrades` for security fixes;
-- `systemd-timesyncd` keeping the clock right, which TLS needs;
+- `systemd-timesyncd` keeping the clock right, which TLS and apt need; every run waits up to two minutes for its sync before apt refreshes the lists, and fails if NTP stays out of reach;
+- `apt full-upgrade` with `just pi-upgrade` only, and `unattended-upgrades` for Debian's daily security and point-release fixes; a pending reboot is reported, never done by the play;
 - the Wi-Fi from `PI_WIFI_SSID` and `PI_WIFI_PSK` in `pi.env`, taking over the profile cloud-init made, so a PSK change needs no reflash;
+  an empty `PI_WIFI_SSID` leaves the profile alone, and a new SSID adds a profile next to the old one, which you delete with `nmcli connection delete`;
 - `sshd` with keys only and no root login;
-- `nftables` dropping inbound traffic except SSH and the bench port from `bench_allowed_cidrs`;
+- `nftables` dropping inbound traffic except SSH, DHCP replies and the bench port from `bench_allowed_cidrs`;
 - `brltty` and `ModemManager` kept off: the Lite image has neither, but a later desktop or kiosk package could pull in these grabbers of USB-serial ports.
 
 **`tools`** — uv and espflash as pinned GitHub release binaries for `aarch64-unknown-linux-gnu`.
@@ -316,13 +319,16 @@ The unit's choices, and why:
 `serve` re-reads the token file on every request, so changing tokens never restarts the service.
 The service restarts only when the unit, the key, the certificate or `bench_version` changed.
 A restart ends running and queued jobs as `error`, and a new `bench_version` replaces the code they run from, so the play refuses both while any job's `job.json` is not `done`, unless `-e bench_force_restart=true` is given.
-The jobs are checked before the upgrade, so a refused run changes nothing that a running job depends on.
-That check is best effort: a job submitted a moment later still meets the restart.
+`pi-upgrade` is refused the same way, because `serve` runs on the system Python that `apt full-upgrade` may replace; so is a bumped `espflash`, which every flash calls (`uv` is guarded with it).
+The jobs are read before the first role runs and each of these refusals comes before its change, so a refused run leaves the Python, the tools, the bench code and `serve` itself as the job found them; base packages, firewall, sshd and token file are still brought up to date.
+Two gaps stay open until `serve` gets a maintenance mode (see the roadmap).
+The read is a snapshot: a job submitted during the run still meets the upgrade, the tool or the restart.
+And `unattended-upgrades` installs Debian's fixes daily without this guard; that is accepted, since neither `serve` nor espflash comes from apt and a job runs in a fresh child process, so a Python patch release lands under a job at worst.
 
 ## Step 4 — Check it
 
 ```bash
-just pi-idempotent        # a second provisioning run must change nothing
+just pi-idempotent        # applies the play twice; the second run must change nothing
 just pi-check             # the first token in bench.yaml; `just pi-check laptop` names one
 ```
 
@@ -361,8 +367,10 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Task                    | How                                                                  |
 |:------------------------|:---------------------------------------------------------------------|
 | Upgrade the bench       | bump `bench_version` (a release tag), `just pi-provision`            |
-| Check for drift         | `just pi-provision --check --diff`, or `just pi-idempotent`          |
-| Upgrade espflash or uv  | bump version and sha256 in `roles/tools/defaults`, `just pi-provision` |
+| Roll back the bench     | set `bench_version` to the previous tag, `just pi-provision`         |
+| Upgrade the OS          | `just pi-upgrade` while no job runs; if it reports a reboot, `sudo reboot` on the Pi, then `just pi-check` |
+| Check for drift         | `just pi-provision --check --diff` previews; `just pi-idempotent` applies twice |
+| Upgrade espflash or uv  | bump version and sha256 in `roles/tools/defaults`, `just pi-provision`; refused while a job runs |
 | Add or revoke a token   | `just secrets-edit bench.yaml`, `just pi-provision`; no restart      |
 | Change the Wi-Fi        | `just secrets-edit pi.env`, `just pi-provision`; over Ethernet, as the link changes mid-run |
 | Add a person to SOPS    | their age key in `.sops.yaml`, `just secrets-updatekeys`             |
