@@ -57,6 +57,11 @@ FIRST_OPEN_WAIT = 10.0
 # A pulse takes well under a second; a claimed reset waits this long for it to finish
 # (the port may drop mid-pulse) before reporting a failure.
 PULSE_WAIT = 5.0
+# __enter__ returns once the startup boot has settled: no line for BOOT_QUIET with the
+# link up (the banner is out), or BOOT_SETTLE after the pulse at the latest, so a chatty
+# app or a silent link never waits longer.
+BOOT_QUIET = 1.0
+BOOT_SETTLE = RESET_GRACE
 
 
 class SerialLines:
@@ -88,6 +93,8 @@ class SerialLines:
         self._outage_lock = threading.Lock()
         self._ignore_before = 0.0
         self._opened = threading.Event()
+        self._last_line = 0.0  # monotonic time of the last emitted line
+        self._boot_end = 0.0  # monotonic time the latest pulse ended
         self._queue: queue.Queue[str] = queue.Queue()
         self._stop = threading.Event()
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,7 +104,26 @@ class SerialLines:
     def __enter__(self) -> SerialLines:
         self._thread.start()
         self._opened.wait(FIRST_OPEN_WAIT)  # if it never opens, the open outage counts as lost
+        if self._opened.is_set() and self._reset_wanted:
+            # The startup reset's banner comes after the open: hold the first step back
+            # until it has passed, so a window's own drain removes it. No drain here:
+            # an expect step still finds the banner in the queue.
+            self._await_boot()
         return self
+
+    def _await_boot(self) -> None:
+        with self._resets:
+            if not self._resets.wait_for(lambda: self._reset_served >= 1, PULSE_WAIT):
+                return  # the pulse never ran: nothing to wait for
+        while True:
+            now = time.monotonic()
+            with self._outage_lock:
+                up = self._outages[-1][1] is not None
+                reconnect = self._outages[-1][1] or 0.0
+            quiet_since = max(self._last_line, self._boot_end, reconnect)
+            if now - self._boot_end >= BOOT_SETTLE or (up and now - quiet_since >= BOOT_QUIET):
+                return
+            time.sleep(0.05)
 
     def __exit__(self, *exc: object) -> None:
         self._stop.set()
@@ -179,6 +205,7 @@ class SerialLines:
                 self._outages.append([time.monotonic(), None])
 
     def _emit(self, raw: bytes) -> None:
+        self._last_line = time.monotonic()
         line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         self._log.write(line + "\n")
         self._log.flush()
@@ -269,6 +296,7 @@ class SerialLines:
         s.reset_input_buffer()
         (_dtr_reset if self._reset_mode == "dtr" else _hard_reset)(s)
         with self._resets:
+            self._boot_end = time.monotonic()
             self._reset_served = max(self._reset_served, ticket)
             self._resets.notify_all()
 

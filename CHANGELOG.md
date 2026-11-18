@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A board `mac` in `bench.toml` must have the form `aa:bb:cc:dd:ee:ff`, so a typo is a load error instead of a detection that waits forever.
 
+### Fixed
+
+- A watch window that is the first step no longer sees the banner of the startup reset: the run waits for the boot to settle (about 1 s), so `reject` can include `rst:0x|ESP-ROM:` in every window (bug 002).
+
 ## [0.6.0] - 2026-11-15
 
 ### Added

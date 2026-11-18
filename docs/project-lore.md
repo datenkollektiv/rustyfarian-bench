@@ -53,6 +53,15 @@ Measured on an ESP32-S3 with pyserial 3.5 on macOS: 4/4 opens reset before, 0/5 
 This holds only for the ESP's RTS/DTR interlock: on a DTR auto-reset board (Arduino-style capacitor) raising DTR is the reset, so `reset = "dtr"` boards keep DTR low on open.
 pyserial does not promise glitch-free modem lines during open, and macOS asserts DTR itself, so a DTR auto-reset board can still reboot when the port opens.
 
+**A watch window's drain at its start cannot remove a boot banner that has not arrived yet.**
+`SerialLines.__enter__` used to return once the port opened, before the reader pulsed the startup reset, so the first step began while the chip was still in reset.
+The ROM printed `rst:0x`/`ESP-ROM:` a moment later, inside the window, and failed any reboot `reject` on the reset the runner itself requested.
+Fix: `__enter__` waits for the startup pulse and then for the boot to go quiet, without draining, so an `expect` step still sees the banner; see `docs/bugs/002-startup-reset-banner-in-first-window-2026-11-17.md`.
+
+**Silence on a native-USB port right after a reset is the re-enumeration, not a finished boot.**
+The USB Serial/JTAG link drops for 0.5–3 s after the pulse, so a "no line for N seconds" rule fires during the outage, and the banner then arrives late.
+Fix: count quiet time only while the port is open and restart it on every reconnect, with a cap (`BOOT_SETTLE`) for a link that never returns.
+
 ---
 
 ## Host Probes
