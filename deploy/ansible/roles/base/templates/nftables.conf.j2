@@ -12,6 +12,9 @@ table inet filter {
         ct state invalid drop
         meta l4proto { icmp, ipv6-icmp } accept
 
+        # a rebind reply answers a broadcast, so conntrack may not see it as related
+        udp sport 67 udp dport 68 accept
+
         # SSH stays open: keys only, and a typo in the CIDRs must not lock us out
         tcp dport 22 accept
 

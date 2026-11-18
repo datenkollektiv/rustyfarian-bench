@@ -190,20 +190,26 @@ pi-seed bootfs: deploy-collections
     cd "{{ ansible_dir }}"
     sops exec-env "{{ shared_secrets }}/pi.env" '{{ ansible }} ansible-playbook -i localhost, seed.yml'
 
-# provision or upgrade the bench host: `just pi-provision --check --diff`, `-e bench_force_restart=true`
+# provision the bench host or upgrade `bench_version`, no OS upgrade: `just pi-provision --check --diff`, `-e bench_force_restart=true`
 [group('bench-host')]
 [positional-arguments]
 pi-provision *args: deploy-lint
     cd "{{ ansible_dir }}" && {{ ansible }} ansible-playbook site.yml "$@"
 
-# provision twice, without the full apt upgrade; the second run must change nothing
+# provision with `apt full-upgrade`, refused while a job is unfinished; reports a pending reboot
+[group('bench-host')]
+[positional-arguments]
+pi-upgrade *args: deploy-lint
+    cd "{{ ansible_dir }}" && {{ ansible }} ansible-playbook site.yml -e base_full_upgrade=true "$@"
+
+# apply the provisioning twice (it changes the host, unlike --check); the second run must change nothing
 [group('bench-host')]
 pi-idempotent: deploy-lint
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ ansible_dir }}"
-    {{ ansible }} ansible-playbook site.yml -e base_full_upgrade=false
-    out=$(ANSIBLE_NOCOLOR=1 {{ ansible }} ansible-playbook site.yml -e base_full_upgrade=false 2>&1) \
+    {{ ansible }} ansible-playbook site.yml
+    out=$(ANSIBLE_NOCOLOR=1 {{ ansible }} ansible-playbook site.yml 2>&1) \
         || { echo "$out"; exit 1; }
     recap=$(sed -n '/PLAY RECAP/,$p' <<< "$out")
     echo "$recap"

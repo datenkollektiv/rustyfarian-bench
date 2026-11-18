@@ -1,0 +1,41 @@
+---
+# Run by site.yml before any role, so the jobs are read before anything they depend on
+# changes: `serve` runs on /usr/bin/python3, which a full upgrade may replace.
+- name: Read the service state
+  ansible.builtin.systemd_service:
+    name: rustyfarian-bench
+  register: bench_service
+  changed_when: false
+  check_mode: false
+
+# Best effort: the queue lives in memory, but every unfinished job has a job.json that is
+# not "done"; a job submitted during this run is not seen.
+- name: Find unfinished jobs
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, pathlib, sys
+        for p in sorted(pathlib.Path(sys.argv[1]).glob("*/job.json")):
+            if json.loads(p.read_text()).get("status") != "done":
+                print(p.parent.name)
+      - "{{ bench_outbox }}"
+  register: bench_busy
+  changed_when: false
+  check_mode: false
+  when: bench_service.status.ActiveState == 'active'
+
+# one name for every guard: the tools and bench roles refuse their changes by it
+- name: Name the unfinished jobs
+  ansible.builtin.set_fact:
+    bench_unfinished: "{{ bench_busy.stdout_lines | default([]) }}"
+
+- name: Refuse a full upgrade under unfinished jobs
+  ansible.builtin.assert:
+    that: bench_unfinished == [] or bench_force_restart | bool
+    fail_msg: >-
+      a full upgrade may replace the Python these jobs run on:
+      {{ bench_unfinished | join(', ') }}. Wait, or rerun with -e bench_force_restart=true.
+    quiet: true
+  when: base_full_upgrade | default(false) | bool

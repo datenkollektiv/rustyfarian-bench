@@ -46,6 +46,10 @@ Walkthrough and rationale live in `deploy/README.md`; the split is recorded in A
 - [ ] Supply chain after the gate: commit-SHA pins for the tag, Galaxy collections and CI actions, hashed deps for `uv tool install`.
 - [ ] Wi-Fi PSK stays plaintext on the FAT boot partition; hash it or remove `network-config` after first boot?
 - [ ] Tighter unit after the gate: `DevicePolicy=closed` with tty `DeviceAllow`, `SystemCallFilter`, checked with `systemd-analyze security`.
+- [ ] Wi-Fi profile named after the SSID: a new SSID leaves the old profile autoconnecting; a stable managed name needs a migration from cloud-init's `netplan-wlan0-<SSID>`.
+- [ ] Certificate expiry: reissued only by a provisioning run; `pi-check` could warn when less than 30 days remain.
+- [ ] One `pi-base` role shared with rustyfarian-beekeeper's gateway deploy, instead of backporting fixes between two copies?
+- [ ] `unattended-upgrades` runs outside the job guard (accepted, README). An apt `DPkg::Pre-Invoke` hook with the same unfinished-jobs check would hold it, and the Ansible upgrade too; design it with the maintenance mode (roadmap), which closes the submit race.
 
 ## State
 - [x] Design approved
@@ -63,3 +67,4 @@ Walkthrough and rationale live in `deploy/README.md`; the split is recorded in A
 ## Session Log
 - 2026-11-15 — Designed, v0.6.0 released, implemented with three reviews applied, SOPS convention v2 adopted, `just doctor` added
 - 2026-11-16 — First Pi 5 run: seed, provision (fixes: fail_msg, handlers, locale, Wi-Fi idempotence, host keys), `pi-submit` passed 3/3
+- 2026-11-19 — Review-queue feedback applied (Ansible review, beekeeper backports): job guard before any role, opt-in `pi-upgrade`, reboot reported, clock wait, DHCP rule, Wi-Fi `argv`, doctor key path; not yet run on the Pi. Second round: apt lists refreshed on every run, a tool bump refused under unfinished jobs, `unattended-upgrades` risk accepted and recorded

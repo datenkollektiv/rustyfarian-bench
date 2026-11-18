@@ -5,7 +5,19 @@
     fail_msg: set bench_allowed_cidrs in inventory.yml, or nobody can reach the bench port
     quiet: true
 
-# off for `just pi-idempotent`: a Debian update arriving between two runs is not drift
+# A Pi 5 without an RTC battery boots at the last saved time, and apt rejects every
+# Release file as "not valid yet" until timesyncd (on the Lite image) has synced.
+# On every run: the upgrade and the install below both refresh the apt lists.
+- name: Wait for the clock to sync
+  ansible.builtin.command: timedatectl show --property NTPSynchronized --value
+  register: base_clock
+  until: base_clock.stdout == 'yes'
+  retries: 24  # 2 minutes
+  delay: 5
+  changed_when: false
+  check_mode: false
+
+# only for `just pi-upgrade`, guarded by bench/tasks/busy.yml: a token change is no OS upgrade
 - name: Upgrade all packages
   ansible.builtin.apt:
     update_cache: true
@@ -13,8 +25,23 @@
     upgrade: full
   when: base_full_upgrade | bool
 
+# Reported, not done: a reboot ends running jobs, and the host must come back with its boards.
+- name: Look for a pending reboot
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: base_reboot
+
+- name: Report the pending reboot
+  ansible.builtin.debug:
+    msg: a reboot is pending; reboot once no job runs, then `just pi-check`
+  when: base_reboot.stat.exists
+
+# The lists are refreshed first: a fresh or long-off image names versions the mirror has
+# dropped since. Only the install sets `changed`, so a refresh alone keeps a run at changed=0.
 - name: Install the base packages
   ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
     name:
       - git                 # uv installs rustyfarian-bench from a git tag
       - nftables
@@ -51,6 +78,9 @@
   when: "'en_US.utf8' not in base_locales.stdout_lines"
   changed_when: true
 
+# Daily and outside the job guard: a Debian fix may land under a running job. Accepted,
+# since neither serve nor espflash comes from apt and a job runs in a fresh child process;
+# the README names it, and the feature doc's open questions name the apt hook that would close it.
 - name: Turn on unattended security upgrades
   ansible.builtin.copy:
     dest: /etc/apt/apt.conf.d/20auto-upgrades
@@ -134,7 +164,8 @@
   no_log: true
 
 - name: Connect the Wi-Fi with its new settings
-  ansible.builtin.command: nmcli connection up {{ base_wifi_name }}
+  ansible.builtin.command:
+    argv: [nmcli, connection, up, "{{ base_wifi_name }}"]  # an SSID may hold spaces
   when: base_wifi_profile is changed
   changed_when: true
 

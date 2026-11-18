@@ -45,16 +45,39 @@
     remote_src: true
     creates: "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}/espflash"
 
-- name: Install uv and espflash
-  ansible.builtin.copy:
+# A job calls espflash for every flash, so a changed binary under unfinished jobs is refused
+# like a restart. bench_unfinished comes from bench/tasks/busy.yml in pre_tasks and has no
+# default on purpose: a play that skipped the read must not replace a tool. copy decides by
+# content, so a dry run tells first whether anything would change.
+- name: See whether uv or espflash would change
+  ansible.builtin.copy: &tools_install
     src: "{{ item.src }}"
     dest: /usr/local/bin/{{ item.name }}
     remote_src: true
     owner: root
     group: root
     mode: "0755"
-  loop:
+  loop: &tools_binaries
     - { name: uv, src: "{{ tools_cache_dir }}/uv-{{ tools_uv_version }}/uv" }
     - { name: espflash, src: "{{ tools_cache_dir }}/espflash-{{ tools_espflash_version }}/espflash" }
-  loop_control:
+  loop_control: &tools_label
     label: "{{ item.name }}"
+  check_mode: true
+  register: tools_pending
+
+- name: Refuse to replace a tool under unfinished jobs
+  ansible.builtin.assert:
+    that: >-
+      not tools_pending.changed
+      or bench_unfinished == []
+      or bench_force_restart | default(false) | bool
+    fail_msg: >-
+      {{ tools_pending.results | selectattr('changed') | map(attribute='item.name') | join(' and ') }}
+      would change under these jobs: {{ bench_unfinished | join(', ') }}.
+      Wait, or rerun with -e bench_force_restart=true.
+    quiet: true
+
+- name: Install uv and espflash
+  ansible.builtin.copy: *tools_install
+  loop: *tools_binaries
+  loop_control: *tools_label

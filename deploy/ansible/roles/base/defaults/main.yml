@@ -1,3 +1,3 @@
 ---
-# `just pi-idempotent` turns this off; unattended-upgrades keeps security fixes coming meanwhile
-base_full_upgrade: true
+# `just pi-upgrade` turns this on; unattended-upgrades keeps security fixes coming meanwhile
+base_full_upgrade: false

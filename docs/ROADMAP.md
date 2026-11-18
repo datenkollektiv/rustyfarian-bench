@@ -15,6 +15,7 @@ timeline
         Bench host provisioning (feature-doc) : a fresh Pi 5 becomes the bench host from git, cloud-init seed plus one Ansible push, closing both remote bench Pi gates
         Local board overrides (feature-doc) : a git-ignored `bench/bench.local.toml` sets per-machine `mac`, `usb_id`, `usb_serial` and `baud`, so committed `bench.toml` files carry no MACs (family check B08)
     section Near term
+        Bench maintenance mode : `serve` refuses new jobs while a maintenance marker exists, so `pi-upgrade` and a restart drain the queue instead of racing a submit
         Outbox retention : `serve` deletes finished jobs after N days, images and logs included, so stored Wi-Fi credentials and serial logs live a window, not forever
         Bench kiosk : the Pi's Waveshare 3.5" display shows the running job and the last verdicts, via a read-only job list in `serve` and a Chromium kiosk role
         Result traceability : results record the consumer git revision, dirty flag and scenario hash

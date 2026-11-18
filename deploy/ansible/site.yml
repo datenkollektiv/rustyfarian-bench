@@ -1,8 +1,13 @@
 ---
-# Provisions the bench host; rerun to upgrade. Run through `just pi-provision`.
+# Provisions the bench host; rerun to upgrade. Run through `just pi-provision` or `just pi-upgrade`.
 - name: Provision the rustyfarian bench host
   hosts: bench
   become: true
+  pre_tasks:
+    - name: Read the unfinished jobs before anything changes
+      ansible.builtin.include_role:
+        name: bench
+        tasks_from: busy
   roles:
     - base
     - tools
