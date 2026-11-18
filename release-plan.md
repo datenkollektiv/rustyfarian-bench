@@ -29,6 +29,7 @@ Before finalizing the changelog:
 - [ ] `CHANGELOG.md` has an `[Unreleased]` section with content.
 - [ ] Version consistent across the files listed under Version Bump.
 - [ ] At least one consumer bench run passed on hardware.
+- [ ] No bug report waits in `review-queue/`: each is filed in `docs/bugs/` and fixed, or still open there with a known workaround; a bug this release introduces blocks it.
 
 After pushing the release commit, before tagging:
 

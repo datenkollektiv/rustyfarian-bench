@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 import serial
 
-from rustyfarian_bench import serial_lines
-from rustyfarian_bench.config import ResetMode
+from rustyfarian_bench import runner, serial_lines
+from rustyfarian_bench.config import BenchConfig, Board, ResetMode, Scenario, Step
+from rustyfarian_bench.device import Device
 from rustyfarian_bench.serial_lines import DOWNLOAD_HINT, SerialLines, download_hint
+from rustyfarian_bench.steps import StepResult, run_step
 
 from .fakes import FakeSerialWorld, ScriptItem, shrink_sleep, wait_until
 
@@ -41,6 +43,9 @@ def make(
 ) -> SerialLines:
     shrink_sleep(monkeypatch)
     world.install(monkeypatch)
+    if not world.default_present:
+        # A port that may not be there must not make entering wait out a whole pulse.
+        monkeypatch.setattr(serial_lines, "PULSE_WAIT", 0.5)
     return SerialLines(PORT, tmp_path / "run.log", echo=False, reset=reset)
 
 
@@ -291,3 +296,178 @@ def test_none_sends_no_pulse_but_keeps_the_esp_safe_open(
         assert s.dtr_raised_by_reader == 1  # the open's own, no pulse
         assert s.open_lines[1:] == [(True, True), (True, False)]
         assert "rts=True" not in s.events
+
+
+# --- the startup reset's boot banner (bug 002) ---------------------------------------------
+
+BANNER = "ESP-ROM:esp32c3-api1-20210207\nrst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)\n"
+SECOND_BOOT = "rst:0x3 (RTC_SW_SYS_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)\n"
+REBOOT = "rst:0x|ESP-ROM:"
+
+
+def boot_timing(monkeypatch: pytest.MonkeyPatch, quiet: float = 0.3, settle: float = 2.0) -> None:
+    # Small, but ten times the 30 ms the fake boot takes to print its banner, so a busy CI
+    # runner does not end the quiet time before the banner arrives.
+    monkeypatch.setattr(serial_lines, "BOOT_QUIET", quiet, raising=False)
+    monkeypatch.setattr(serial_lines, "BOOT_SETTLE", settle, raising=False)
+
+
+def after(seconds: float) -> ScriptItem:
+    """A script item that takes `seconds` of real time (time.sleep is shrunk by make())."""
+
+    def wait() -> None:
+        threading.Event().wait(seconds)
+
+    return wait
+
+
+def watch(sl: SerialLines, reject: str | None = REBOOT, seconds: float = 0.2) -> StepResult:
+    """The first step of a run: a watch-only window, as the runner starts it."""
+    step = Step(say="watch", duration=seconds, reject=reject, arm=False)
+    return run_step(step, sl, lambda question: True)
+
+
+def test_a_first_window_ignores_the_banner_of_the_startup_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boot_timing(monkeypatch)
+    # The banner comes a moment after the pulse, as the chip needs to boot.
+    world = FakeSerialWorld([after(0.03), BANNER.encode(), b"app ready\n"])
+    with make(tmp_path, monkeypatch, world, reset="rts") as sl:
+        result = watch(sl)
+    assert result.ok, result.detail
+
+
+def test_a_second_reboot_inside_the_first_window_still_fails_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boot_timing(monkeypatch)
+    gate = threading.Event()
+    # The window's own reboot follows the startup banner, but only once the test lets it.
+
+    def hold() -> None:
+        gate.wait(2.0)
+
+    world = FakeSerialWorld([after(0.03), BANNER.encode(), hold, SECOND_BOOT.encode()])
+    with make(tmp_path, monkeypatch, world, reset="rts") as sl:
+        timer = threading.Timer(0.05, gate.set)
+        timer.start()
+        result = watch(sl, seconds=0.5)
+        timer.join()
+    assert not result.ok
+    assert "RTC_SW_SYS_RST" in result.detail  # the second boot, not the startup banner
+    assert "POWERON" not in result.detail
+
+
+def test_an_attended_watch_that_is_the_first_step_passes_on_a_reset_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boot_timing(monkeypatch)
+    board = Board("c3", "esp32c3", "C3", reset="rts")
+    steps = (
+        Step(say="boot", expect=("app ready",), arm=False),  # skipped by --attended
+        Step(say="wave", duration=0.2, reject=REBOOT, attended=True),
+    )
+    scenario = Scenario("chk", board, ("ex",), steps, tmp_path / "chk.toml")
+    cfg = BenchConfig(tmp_path / "bench", ("true",), ("true",), {"c3": board}, (scenario,))
+    world = FakeSerialWorld([after(0.03), BANNER.encode(), b"app ready\n"])
+    shrink_sleep(monkeypatch)
+    world.install(monkeypatch)
+
+    def real_lines(port: str, log: Path, **kw: object) -> SerialLines:
+        # The real reader over the fake port; only the echo is switched off.
+        return SerialLines(port, log, baud=board.baud, echo=False, reset=board.reset)
+
+    monkeypatch.setattr(runner, "_run", lambda *a, **k: True)
+    monkeypatch.setattr(runner, "SerialLines", real_lines)
+    monkeypatch.setattr(
+        runner.Session, "_device_for", lambda self, s: Device("/dev/x", "esp32c3", None)
+    )
+    opts = runner.Options(repo=tmp_path, assume_yes=True, mode="attended")
+
+    result = runner.Session(cfg, opts).run_example(scenario, "ex")
+
+    assert [s.say for s in result.steps] == ["wave"]
+    assert result.steps[0].ok, result.steps[0].detail
+    assert result.verdict == "pass"
+
+
+def test_an_expect_step_that_is_first_still_sees_the_startup_banner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Guard: entering must not drain, or a boot-banner check would never match.
+    boot_timing(monkeypatch)
+    world = FakeSerialWorld([after(0.03), BANNER.encode(), b"app ready\n"])
+    with make(tmp_path, monkeypatch, world, reset="rts") as sl:
+        step = Step(say="boot", expect=("rst:0x1", "app ready"), timeout=1.0, arm=False)
+        result = run_step(step, sl, lambda question: True)
+    assert result.ok, result.detail
+
+
+def test_a_board_without_reset_adds_no_wait_on_entering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Guard: with reset = "none" there is no boot to wait for, however long the quiet time.
+    boot_timing(monkeypatch, quiet=5.0, settle=5.0)
+    world = FakeSerialWorld([b"app ready\n"])
+    t0 = time.monotonic()
+    with make(tmp_path, monkeypatch, world, reset="none") as sl:
+        assert time.monotonic() - t0 < 1.0
+        assert sl.get(2.0) == "app ready"
+    assert not any(e.startswith("rts=") for e in world.opened[0].events)
+
+
+def test_entering_does_not_return_before_the_startup_pulse_has_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boot_timing(monkeypatch)
+    world = FakeSerialWorld([])
+    sl = make(tmp_path, monkeypatch, world, reset="rts")
+    # A pulse that takes 0.1 s of real time (make() shrank every sleep to a millisecond).
+    monkeypatch.setattr(
+        "rustyfarian_bench.serial_lines.time.sleep", lambda s: threading.Event().wait(0.05)
+    )
+    with sl:
+        # The pulse ends by letting RTS go; nothing after it touches the lines.
+        assert world.opened[0].events[-2:] == ["rts=True", "rts=False"]
+
+
+def test_a_pulse_that_never_finishes_does_not_hang_entering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Guard: the wait for the pulse is bounded by PULSE_WAIT.
+    boot_timing(monkeypatch)
+    release = threading.Event()
+    world = FakeSerialWorld([])
+    sl = make(tmp_path, monkeypatch, world, reset="rts")
+    monkeypatch.setattr(serial_lines, "PULSE_WAIT", 0.2)
+    monkeypatch.setattr("rustyfarian_bench.serial_lines.time.sleep", lambda s: release.wait(5.0))
+    t0 = time.monotonic()
+    try:
+        with sl:
+            assert time.monotonic() - t0 < 1.5
+            # Let the stuck reader finish its pulse so leaving does not wait out the join grace.
+            release.set()
+    finally:
+        release.set()
+
+
+def test_a_banner_after_the_port_re_enumerated_is_still_not_in_the_first_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Native USB: the port vanishes right after the pulse for longer than the quiet time,
+    # then returns, and the banner is printed on the second open.
+    boot_timing(monkeypatch)
+    world = FakeSerialWorld(present=False)
+    world.paths.add(PORT)
+    world.scripts.append([unplug(world)])
+    world.scripts.append([after(0.03), BANNER.encode(), b"app ready\n"])
+    back = threading.Timer(0.15, world.paths.add, args=(PORT,))
+    back.start()
+    try:
+        with make(tmp_path, monkeypatch, world, reset="rts") as sl:
+            result = watch(sl)
+    finally:
+        back.join()
+    assert len(world.opened) >= 2
+    assert result.ok, result.detail

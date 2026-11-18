@@ -207,6 +207,9 @@ def test_a_startup_pulse_still_running_does_not_answer_a_steps_reset(
     shrink_sleep(monkeypatch)
     world.install(monkeypatch)
     monkeypatch.setattr("rustyfarian_bench.serial_lines._hard_reset", slow_pulse)
+    # Entering waits for the startup pulse, which this test holds open on purpose: let that
+    # wait run out quickly so the test can ask for its reset during the pulse.
+    monkeypatch.setattr("rustyfarian_bench.serial_lines.PULSE_WAIT", 0.1)
     answers: list[tuple[bool, int]] = []
     with SerialLines("/dev/x", tmp_path / "run.log", echo=False, reset="rts") as sl:
         asker = threading.Thread(target=lambda: answers.append((sl.reset(2.0), len(finished))))
