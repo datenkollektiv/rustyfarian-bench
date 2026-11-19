@@ -48,6 +48,7 @@ Walkthrough and rationale live in `deploy/README.md`; the split is recorded in A
 - [ ] Tighter unit after the gate: `DevicePolicy=closed` with tty `DeviceAllow`, `SystemCallFilter`, checked with `systemd-analyze security`.
 - [ ] Wi-Fi profile named after the SSID: a new SSID leaves the old profile autoconnecting; a stable managed name needs a migration from cloud-init's `netplan-wlan0-<SSID>`.
 - [ ] Certificate expiry: reissued only by a provisioning run; `pi-check` could warn when less than 30 days remain.
+- [ ] First-run checklist in `deploy/README.md`: the expected result of each step, safe card ejection, `cloud-init status --wait`, a clock and network check (Ansible review follow-up).
 - [ ] One `pi-base` role shared with rustyfarian-beekeeper's gateway deploy, instead of backporting fixes between two copies?
 - [ ] `unattended-upgrades` runs outside the job guard (accepted, README): an apt `DPkg::Pre-Invoke` hook with the same unfinished-jobs check would hold it and the Ansible upgrade, designed with the maintenance mode (roadmap) that closes the submit race.
 
