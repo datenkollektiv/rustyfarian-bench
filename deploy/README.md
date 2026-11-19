@@ -327,6 +327,7 @@ The play refuses four changes while any job's `job.json` is not `done`, unless `
 
 The jobs are read before the first role runs and each refusal comes before its change, so a refused run leaves the Python, the tools, the bench code and `serve` itself as the job found them.
 Base packages, firewall, sshd and the token file are still brought up to date.
+A refused restart is remembered in `/etc/rustyfarian-bench/restart-pending`, so the next run retries it once the jobs are done, even when nothing else changed.
 Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
 
 - the read is a snapshot, so a job submitted during the run still meets the upgrade, the tool or the restart;
