@@ -29,8 +29,8 @@ A `pass` in `results.jsonl` means the check was observed and the board was conne
 - `just verify` gates every change; hardware validation is done manually afterwards.
 
 ## Open Questions
-- [x] Does a session with `unverified` steps exit non-zero? Yes: exit 3.
-- [ ] Is a 5 s `RESET_GRACE` right on every board? Measure the re-enumeration on hardware.
+- [x] A session with `unverified` steps exits non-zero: exit 3.
+- [ ] Whether a 5 s `RESET_GRACE` fits every board: measure the re-enumeration on hardware.
 
 ## Deferred
 - Require `reject` with `duration` (a bare `duration` is only a link check).

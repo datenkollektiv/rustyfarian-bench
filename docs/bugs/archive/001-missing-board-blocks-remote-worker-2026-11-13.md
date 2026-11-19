@@ -17,7 +17,7 @@ A `serve` job whose board is not attached prints "Please plug in the test device
 
 ## Linked Artefact
 - `src/rustyfarian_bench/device.py:201` (`wait_for`; `wait_for_usb` has the same shape)
-- `docs/features/remote-bench-v1.md` (session log 2026-11-13)
+- `docs/features/archive/remote-bench-v1.md` (session log 2026-11-13)
 - Reproduction job `tmp/outbox/20261113-193943-72eff1/` (developer-local)
 
 ## Reproduction Confidence
@@ -53,7 +53,7 @@ high
 ## Owner
 
 ## Links
-- `docs/features/remote-bench-v1.md`
+- `docs/features/archive/remote-bench-v1.md`
 - `docs/adr/001-remote-bench.md`
 
 ## Session Log

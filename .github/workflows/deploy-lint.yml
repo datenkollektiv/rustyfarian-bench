@@ -4,10 +4,10 @@ name: Deploy lint
 on:
   push:
     branches: ["main"]
-    paths: ["deploy/**", "justfile", ".github/workflows/deploy-lint.yml"]
+    paths: ["deploy/**", "scripts/**", "justfile", ".github/workflows/deploy-lint.yml"]
   pull_request:
     branches: ["main"]
-    paths: ["deploy/**", "justfile", ".github/workflows/deploy-lint.yml"]
+    paths: ["deploy/**", "scripts/**", "justfile", ".github/workflows/deploy-lint.yml"]
   workflow_dispatch:
 
 permissions:
@@ -37,5 +37,5 @@ jobs:
       - name: Setup just
         uses: extractions/setup-just@v4
 
-      - name: yamllint, syntax check, ansible-lint, cloud-init schema
-        run: just deploy-lint
+      - name: yamllint, shellcheck, syntax check, ansible-lint, cloud-init schema
+        run: just ci-deploy-lint

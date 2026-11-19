@@ -9,11 +9,7 @@ Items flow Long term → Mid term → Near term → Ready → done; Ready items 
 timeline
     title rustyfarian-bench
     section Ready
-        Prompt placeholders (feature-doc) : `say` and `confirm` fill in `{mac}`, `{port}`, `{chip}` and captured values such as an IP, so an attended router step names the device
-        Remote bench (feature-doc) : a Pi in the IoT network runs uploaded firmware and scenarios via `serve`, a devcontainer sends them with `submit --wait`; walking skeleton
         Remote bench auth (feature-doc) : bearer tokens over TLS on the `serve` API, the token reaching the devcontainer through `remoteEnv` like the Claude token
-        Bench host provisioning (feature-doc) : a fresh Pi 5 becomes the bench host from git, cloud-init seed plus one Ansible push, closing both remote bench Pi gates
-        Local board overrides (feature-doc) : a git-ignored `bench/bench.local.toml` sets per-machine `mac`, `usb_id`, `usb_serial` and `baud`, so committed `bench.toml` files carry no MACs (family check B08)
     section Near term
         Bench maintenance mode : `serve` refuses new jobs while a maintenance marker exists, so `pi-upgrade` and a restart drain the queue instead of racing a submit
         Outbox retention : `serve` deletes finished jobs after N days, images and logs included, so stored Wi-Fi credentials and serial logs live a window, not forever

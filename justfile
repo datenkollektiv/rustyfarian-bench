@@ -1,10 +1,28 @@
 # rustyfarian-bench — guided hardware bench runner
 
 # list recipes
-default:
+_default:
     @just --list
 
+# every Python call goes through the locked venv, so no recipe runs against a stale one
+uv_run := "uv run --locked"
+pip_audit := "2.10.1"
+# the dev default Python (.python-version): the CI matrix entry that also runs the install smoke check
+dev_python := trim(read(justfile_directory() / ".python-version"))
+# a consumer repo argument, read as "$1": a sibling checkout's name, or an absolute path
+consumer_repo := 'repo=$1; [[ "$repo" == /* ]] || repo="' + justfile_directory() + '/../$repo"'
+# act: a local rustyfarian-ci checkout if RUSTYFARIAN_CI points at one, otherwise the pushed @v1.
+ci_dir := env("RUSTYFARIAN_CI", "")
+ci_repo_flag := if ci_dir != "" { '--local-repository "datenkollektiv/rustyfarian-ci@v1=' + absolute_path(ci_dir) + '"' } else { "" }
+
 # --- dev: the Python package itself -------------------------------------------
+
+# install what a fresh clone is missing, idempotent: the locked venv; `just setup bench-host` adds the Ansible collections
+[group('dev')]
+setup component="":
+    {{ if component == "" { "" } else if component == "bench-host" { "" } else { error("unknown component '" + component + "'; the only one is bench-host") } }}
+    uv sync --locked --all-extras
+    {{ if component == "bench-host" { quote(just_executable()) + " deploy-collections" } else { "" } }}
 
 # format, lint, type-check and test (modifies files)
 [group('dev')]
@@ -22,55 +40,51 @@ verify-python version:
 # build the wheel and run it like a consumer's uvx: --help, list a fixture, the `serve` hint
 [group('dev')]
 smoke-install:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    dist="{{ justfile_directory() }}/tmp/dist"
-    rm -rf "$dist"
-    uv build --wheel --out-dir "$dist"
-    wheel=("$dist"/rustyfarian_bench-*.whl)
-    [ -f "${wheel[0]}" ] || { echo "no wheel built in $dist" >&2; exit 1; }
-    cd "$dist"   # outside the project, so uvx cannot pick up the checkout
-    uvx --isolated --from "${wheel[0]}" rustyfarian-bench --help
-    out=$(uvx --isolated --from "${wheel[0]}" rustyfarian-bench \
-        --repo "{{ justfile_directory() }}/tests/fixtures/consumer" list)
-    echo "$out"
-    grep -qE "^s3/smoke +smoke_example$" <<< "$out"
-    # the base wheel has no web stack: `serve` must name the extra and exit 2
-    rc=0
-    out=$(uvx --isolated --from "${wheel[0]}" rustyfarian-bench serve 2>&1) || rc=$?
-    echo "$out"
-    [ "$rc" -eq 2 ] || { echo "serve exited $rc, expected 2" >&2; exit 1; }
-    grep -qF "rustyfarian-bench[serve]" <<< "$out"
+    bash "{{ justfile_directory() }}/scripts/smoke-install.sh"
 
 # run the unit tests (all extras, so the serve tests can import fastapi)
 [group('dev')]
 test *args:
-    uv run --locked --all-extras pytest {{ args }}
+    {{ uv_run }} --all-extras pytest {{ args }}
 
 # lint with ruff
 [group('dev')]
 lint:
-    uv run --locked ruff check
+    {{ uv_run }} ruff check
 
 # format with ruff
 [group('dev')]
 fmt:
-    uv run --locked ruff format
+    {{ uv_run }} ruff format
 
 # check formatting without changing files
 [group('dev')]
 fmt-check:
-    uv run --locked ruff format --check
+    {{ uv_run }} ruff format --check
 
 # strict mypy
 [group('dev')]
 typecheck:
-    uv run --locked --all-extras mypy src tests
+    {{ uv_run }} --all-extras mypy src tests
 
-# run the CI workflow locally via act (requires Docker + act): `just act` or `just act --matrix python:3.12`
+# audit the locked dependencies, all extras, against the advisory database; needs the network, so not in verify
 [group('dev')]
-act *args:
-    act -j verify --pull=false -P ubuntu-latest=catthehacker/ubuntu:act-latest {{ args }}
+audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    req="{{ justfile_directory() }}/tmp/audit-requirements.txt"
+    mkdir -p "$(dirname "$req")"
+    uv export --locked --all-extras --no-hashes --no-emit-project -o "$req" --quiet
+    uvx "pip-audit@{{ pip_audit }}" -r "$req" --progress-spinner off
+
+# run the CI jobs locally with act (needs Docker + act): all jobs, or one by id, `just act deploy-lint`
+[group('dev')]
+act job="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for j in {{ if job == "" { "verify deploy-lint" } else { job } }}; do
+        act -j "$j" --pull=false -P ubuntu-latest=catthehacker/ubuntu:act-latest {{ ci_repo_flag }}
+    done
 
 # remove scratch files, build output and tool caches; keeps .venv and release/
 [group('dev')]
@@ -83,17 +97,28 @@ lock:
     uv lock
     uv sync --locked
 
+# --- ci: one recipe per GitHub Actions job; the job runs only this ------------
+
+# the Verify job for one matrix Python; on the dev default also the install smoke check: `just ci-verify 3.12`
+[group('ci')]
+ci-verify python: (verify-python python)
+    {{ if python == dev_python { quote(just_executable()) + " smoke-install" } else { "" } }}
+
+# the Deploy lint job
+[group('ci')]
+ci-deploy-lint: deploy-lint
+
 # --- bench: run consumers' checks from this checkout --------------------------
 
 # serve the remote bench from here, outbox in tmp/: `just serve --port 8001`
 [group('bench')]
 serve *args:
-    uv run --locked --extra serve rustyfarian-bench serve --outbox tmp/outbox {{ args }}
+    {{ uv_run }} --extra serve rustyfarian-bench serve --outbox tmp/outbox {{ args }}
 
 # probe the connected boards
 [group('bench')]
 detect:
-    uv run --locked rustyfarian-bench detect
+    {{ uv_run }} rustyfarian-bench detect
 
 # run a consumer's checks from here: `just bench rustyfarian-peripherals s3 b3f` (sibling name or absolute path)
 [group('bench')]
@@ -101,9 +126,9 @@ detect:
 bench repo target *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    repo=$1; [[ "$repo" == /* ]] || repo="{{ justfile_directory() }}/../$repo"
+    {{ consumer_repo }}
     shift
-    uv run --locked rustyfarian-bench --repo "$repo" run "$@"
+    {{ uv_run }} rustyfarian-bench --repo "$repo" run "$@"
 
 # list a consumer's scenarios: `just bench-list rustyfarian-ws2812`
 [group('bench')]
@@ -111,8 +136,8 @@ bench repo target *args:
 bench-list repo:
     #!/usr/bin/env bash
     set -euo pipefail
-    repo=$1; [[ "$repo" == /* ]] || repo="{{ justfile_directory() }}/../$repo"
-    uv run --locked rustyfarian-bench --repo "$repo" list
+    {{ consumer_repo }}
+    {{ uv_run }} rustyfarian-bench --repo "$repo" list
 
 # submit a consumer's check to a remote bench (URL from $RUSTYFARIAN_BENCH_URL or --bench): `just submit rustyfarian-network c3 hal_c3_connect_async --wait`
 [group('bench')]
@@ -120,9 +145,9 @@ bench-list repo:
 submit repo board example *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    repo=$1; [[ "$repo" == /* ]] || repo="{{ justfile_directory() }}/../$repo"
+    {{ consumer_repo }}
     shift
-    uv run --locked rustyfarian-bench --repo "$repo" submit "$@"
+    {{ uv_run }} rustyfarian-bench --repo "$repo" submit "$@"
 
 # --- bench host (deploy/README.md): pins, then recipes -------------------------
 
@@ -154,7 +179,7 @@ doctor *args:
 deploy-collections:
     cd "{{ ansible_dir }}" && {{ ansible }} ansible-galaxy collection install -r requirements.yml -p .collections
 
-# lint deploy/: yamllint, shellcheck, syntax check, ansible-lint, and the cloud-init seed rendered from fixture values
+# lint deploy/ and scripts/: yamllint, shellcheck, syntax check, ansible-lint, and the cloud-init seed rendered from fixture values
 [group('bench-host')]
 deploy-lint: deploy-collections
     ANSIBLE="{{ ansible }}" ANSIBLE_CORE="{{ ansible_core }}" ANSIBLE_LINT="{{ ansible_lint }}" \
@@ -264,25 +289,7 @@ encrypt file:
 # fail on any file in shared-secrets/ that is not SOPS-encrypted or in a format this cannot check (needs no age key)
 [group('secrets')]
 secrets-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    shopt -s nullglob dotglob
-    bad=0
-    for f in "{{ shared_secrets }}"/*; do
-        n=${f##*/}
-        if [ ! -f "$f" ]; then
-            echo "UNEXPECTED: shared-secrets/$n is not a regular file" >&2; bad=1; continue
-        fi
-        # encrypted dotenv carries a sops_version= line, JSON a top-level "sops" object, YAML a sops: key
-        case "$n" in
-            *.env) grep -q '^sops_version=' "$f" ;;
-            *.json) grep -q '"sops"[[:space:]]*:' "$f" ;;
-            *.yaml | *.yml) grep -q '^sops:' "$f" ;;
-            *) echo "UNSUPPORTED: shared-secrets/$n: only .env, .json, .yaml and .yml can be checked" >&2
-               bad=1; continue ;;
-        esac || { echo "PLAINTEXT: shared-secrets/$n is not encrypted; run 'just encrypt $n'" >&2; bad=1; }
-    done
-    exit "$bad"
+    bash "{{ justfile_directory() }}/deploy/secrets-check.sh" "{{ shared_secrets }}"
 
 # re-encrypt every file in shared-secrets/ for the recipients now in .sops.yaml
 [group('secrets')]

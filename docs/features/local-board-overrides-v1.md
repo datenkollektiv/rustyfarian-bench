@@ -17,7 +17,7 @@ Source: `review-queue/rustyfarian-bench-local-board-overrides-v1.md`, from famil
 |                The committed board must load on its own, then the merged one | Other machines have no local file; errors name the file that caused them | Validate only the merged table             |
 |   Raw tables merge before `_parse_board`, which validates the merged values | One validation path for both files                                  | `dataclasses.replace` on a parsed `Board`  |
 |                     `Board.mac_source` names the file when it supplied `mac` | The detection line and the wrong-MAC warning say where the pin is from | Provenance for every key; results.jsonl field |
-| `submit` sends only the committed `mac` and `baud` (`Board.committed_mac`, `committed_baud`) | Local values describe this machine; the bench host has other boards | The merged values (first cut, reverted in review) |
+|                  `submit` sends only `Board.committed_mac` and `committed_baud` | Local values describe this machine; the bench host has other boards | The merged values (first cut, reverted in review) |
 |                       A `mac` in either file must be `aa:bb:cc:dd:ee:ff` on load | A typo or `dc:54:75:...` would make detection wait forever          | Check only in `submit` and `serve`         |
 |                                           `reset` is not a local key | Reset mode follows the board's USB hardware; other wiring is another board | Allow `reset` per machine                  |
 |                    A local `mac` on a `detect = false` board is accepted silently | Same as a committed one today                                       | Warn or reject                             |

@@ -22,10 +22,12 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 
 ## Development Workflow
 
+- `just setup` — a fresh clone: the locked venv with all extras; `just setup bench-host` adds the Ansible collections.
 - `just verify` — ruff lint, format check, `mypy --strict`, pytest; the non-modifying gate.
 - `just pre-commit` — `ruff format`, then `verify`.
 - `just detect` — probe the connected boards.
 - `just deploy-lint` — lint the bench host provisioning in `deploy/` (Ansible, cloud-init); needs the network, so it is not part of `verify`.
+- `just audit` — pip-audit over the locked dependencies, all extras; needs the network, so it is not part of `verify`.
 - Dependencies are managed with uv (`uv.lock` committed, Python pinned in `.python-version`); never use pip or a hand-activated venv.
 
 ## Key Conventions

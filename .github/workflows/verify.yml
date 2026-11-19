@@ -39,9 +39,6 @@ jobs:
       - name: Setup just
         uses: extractions/setup-just@v4
 
-      - name: Lint, format check, type-check, tests
-        run: just verify-python ${{ matrix.python }}
-
-      - name: Install smoke check
-        if: matrix.python == '3.14'
-        run: just smoke-install
+      # the verify gate on this Python; on the dev default (.python-version) also the install smoke check
+      - name: Verify
+        run: just ci-verify ${{ matrix.python }}

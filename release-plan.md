@@ -2,7 +2,7 @@
 
 Release process for `rustyfarian-bench`.
 
-> **Status:** Last exercised for `v0.6.0` (tagged 2026-11-15).
+> **Status:** Last exercised for `v0.7.0` (tagged 2026-11-20).
 > Update this note only after the tag is pushed.
 > All git write actions (commit, push, tag) are run by the maintainer, never by an agent.
 
@@ -26,6 +26,8 @@ Before finalizing the changelog:
 - [ ] `just verify` passes (ruff, format check, `mypy --strict`, pytest).
 - [ ] `just verify-python 3.12` passes (the declared `requires-python` floor).
 - [ ] `just smoke-install` passes (built wheel via isolated `uvx`: `--help`, then `list` a fixture consumer).
+- [ ] `just deploy-lint` passes (the bench host playbook, the cloud-init seed and every shell script).
+- [ ] `just audit` reports no known vulnerability in the lock, all extras.
 - [ ] `CHANGELOG.md` has an `[Unreleased]` section with content.
 - [ ] Version consistent across the files listed under Version Bump.
 - [ ] At least one consumer bench run passed on hardware.

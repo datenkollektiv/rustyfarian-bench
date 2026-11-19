@@ -39,9 +39,9 @@ Walkthrough and rationale live in `deploy/README.md`; the split is recorded in A
 - The local `run` command, the TOML schema and the `serve` API stay unchanged.
 
 ## Open Questions
-- [x] Does Trixie Lite read the seed from `bootfs`? Yes on paper: cloud-init 25.2, NoCloud from `/boot/firmware`; the Pi run confirms.
-- [x] espflash on aarch64? `espflash-aarch64-unknown-linux-gnu.zip`, needs glibc 2.34 only, no libudev.
-- [x] Does the Pi 5 power a board without a hub? One C3 (CH340) runs on a plain USB 2 port; several boards untested.
+- [x] Trixie Lite reads the seed from `bootfs` (cloud-init 25.2, NoCloud from `/boot/firmware`), confirmed by the Pi run.
+- [x] espflash runs on aarch64: `espflash-aarch64-unknown-linux-gnu.zip` needs glibc 2.34 only, no libudev.
+- [x] The Pi 5 powers one C3 (CH340) on a plain USB 2 port without a hub; several boards untested.
 - [ ] Where is the encrypted `shared-secrets/` backed up, since git never holds it?
 - [ ] Supply chain after the gate: commit-SHA pins for the tag, Galaxy collections and CI actions, hashed deps for `uv tool install`.
 - [ ] Wi-Fi PSK stays plaintext on the FAT boot partition; hash it or remove `network-config` after first boot?
@@ -49,7 +49,7 @@ Walkthrough and rationale live in `deploy/README.md`; the split is recorded in A
 - [ ] Wi-Fi profile named after the SSID: a new SSID leaves the old profile autoconnecting; a stable managed name needs a migration from cloud-init's `netplan-wlan0-<SSID>`.
 - [ ] Certificate expiry: reissued only by a provisioning run; `pi-check` could warn when less than 30 days remain.
 - [ ] One `pi-base` role shared with rustyfarian-beekeeper's gateway deploy, instead of backporting fixes between two copies?
-- [ ] `unattended-upgrades` runs outside the job guard (accepted, README). An apt `DPkg::Pre-Invoke` hook with the same unfinished-jobs check would hold it, and the Ansible upgrade too; design it with the maintenance mode (roadmap), which closes the submit race.
+- [ ] `unattended-upgrades` runs outside the job guard (accepted, README): an apt `DPkg::Pre-Invoke` hook with the same unfinished-jobs check would hold it and the Ansible upgrade, designed with the maintenance mode (roadmap) that closes the submit race.
 
 ## State
 - [x] Design approved
