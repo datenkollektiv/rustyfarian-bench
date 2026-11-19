@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
 ### Added
 
 - An optional, git-ignored `bench/bench.local.toml` sets per-machine board values (`mac`, `usb_id`, `usb_serial`, `baud`), so a consumer no longer commits a MAC that is wrong on every other machine; the detection line and the wrong-board warning name the pin; `submit` never sends a value from it.
@@ -15,10 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `just doctor` checks every bench host prerequisite and names the fix for each gap; `--deep` also decrypts to check the key and the secrets.
 - `just pi-upgrade` adds `apt full-upgrade` to a provisioning run, refused while a job is unfinished, as is a bumped `espflash` or `uv`; `pi-provision` leaves OS packages to `unattended-upgrades`.
 - `just pi-check` and `just pi-idempotent` check a provisioned bench; `just deploy-lint` lints `deploy/`, also as a separate CI workflow.
+- `just audit` runs pip-audit over the locked dependencies with all extras; it needs the network, so it is not part of `verify`.
 
 ### Changed
 
 - A board `mac` in `bench.toml` must have the form `aa:bb:cc:dd:ee:ff`, so a typo is a load error instead of a detection that waits forever.
+- The justfile follows the family recipe contract: private `_default`, `just setup [bench-host]`, `just act [job]` (a job id, no act arguments) and `ci-verify`/`ci-deploy-lint` as the one recipe each CI job runs; `smoke-install` and `secrets-check` run from scripts.
 
 ### Fixed
 

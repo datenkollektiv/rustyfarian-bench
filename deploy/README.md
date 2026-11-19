@@ -122,7 +122,7 @@ One deviation: the convention commits `shared-secrets/`, but this repo is public
 The age key never appears in the repo.
 Set it up once per developer, in your own `~/.zshenv`, so every shell and `just` without direnv see it:
 
-```sh
+```bash
 # sops runs this only when it decrypts; grep keeps the key line of a full age key file
 export SOPS_AGE_KEY_CMD="sh -c 'gopass show <your gopass entry> | grep ^AGE-SECRET-KEY-'"
 ```
@@ -317,13 +317,20 @@ The unit's choices, and why:
 
 `serve` sets `ESPFLASH_SKIP_UPDATE_CHECK=true` for espflash itself, so the unit does not.
 `serve` re-reads the token file on every request, so changing tokens never restarts the service.
-The service restarts only when the unit, the key, the certificate or `bench_version` changed.
-A restart ends running and queued jobs as `error`, and a new `bench_version` replaces the code they run from, so the play refuses both while any job's `job.json` is not `done`, unless `-e bench_force_restart=true` is given.
-`pi-upgrade` is refused the same way, because `serve` runs on the system Python that `apt full-upgrade` may replace; so is a bumped `espflash`, which every flash calls (`uv` is guarded with it).
-The jobs are read before the first role runs and each of these refusals comes before its change, so a refused run leaves the Python, the tools, the bench code and `serve` itself as the job found them; base packages, firewall, sshd and token file are still brought up to date.
-Two gaps stay open until `serve` gets a maintenance mode (see the roadmap).
-The read is a snapshot: a job submitted during the run still meets the upgrade, the tool or the restart.
-And `unattended-upgrades` installs Debian's fixes daily without this guard; that is accepted, since neither `serve` nor espflash comes from apt and a job runs in a fresh child process, so a Python patch release lands under a job at worst.
+
+The play refuses four changes while any job's `job.json` is not `done`, unless `-e bench_force_restart=true` is given:
+
+- a restart of `serve`, due only when the unit, the key, the certificate or `bench_version` changed, because it ends running and queued jobs as `error`;
+- a new `bench_version`, which replaces the code the jobs run from;
+- `pi-upgrade`, because `serve` runs on the system Python that `apt full-upgrade` may replace;
+- a bumped `espflash`, which every flash calls (`uv` is guarded with it).
+
+The jobs are read before the first role runs and each refusal comes before its change, so a refused run leaves the Python, the tools, the bench code and `serve` itself as the job found them.
+Base packages, firewall, sshd and the token file are still brought up to date.
+Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
+
+- the read is a snapshot, so a job submitted during the run still meets the upgrade, the tool or the restart;
+- `unattended-upgrades` installs Debian's fixes daily without this guard, accepted since neither `serve` nor espflash comes from apt and a job runs in a fresh child process, so a Python patch release lands under a job at worst.
 
 ## Step 4 — Check it
 
@@ -368,15 +375,19 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 |:------------------------|:---------------------------------------------------------------------|
 | Upgrade the bench       | bump `bench_version` (a release tag), `just pi-provision`            |
 | Roll back the bench     | set `bench_version` to the previous tag, `just pi-provision`         |
-| Upgrade the OS          | `just pi-upgrade` while no job runs; if it reports a reboot, `sudo reboot` on the Pi, then `just pi-check` |
+| Upgrade the OS          | `just pi-upgrade`                                                    |
+| Reboot after it         | when reported: `sudo reboot` on the Pi once no job runs, then `just pi-check` |
 | Check for drift         | `just pi-provision --check --diff` previews; `just pi-idempotent` applies twice |
-| Upgrade espflash or uv  | bump version and sha256 in `roles/tools/defaults`, `just pi-provision`; refused while a job runs |
+| Upgrade espflash or uv  | bump version and sha256 in `roles/tools/defaults`, `just pi-provision` |
 | Add or revoke a token   | `just secrets-edit bench.yaml`, `just pi-provision`; no restart      |
-| Change the Wi-Fi        | `just secrets-edit pi.env`, `just pi-provision`; over Ethernet, as the link changes mid-run |
+| Change the Wi-Fi        | `just secrets-edit pi.env`, `just pi-provision`, over Ethernet        |
 | Add a person to SOPS    | their age key in `.sops.yaml`, `just secrets-updatekeys`             |
 | Rebuild the Pi          | Steps 1–4 again; the CA and tokens survive in `shared-secrets/`      |
 | Read the logs           | `journalctl -u rustyfarian-bench -f`, jobs in `/srv/bench/outbox/`   |
 | Clear old jobs          | by hand: images may hold Wi-Fi credentials and the outbox is kept forever |
+
+`pi-upgrade`, a tool bump and a restart are refused while a job is unfinished; see the `bench` role above.
+Change the Wi-Fi over Ethernet: the link changes mid-run.
 
 ## Design decisions
 

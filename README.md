@@ -327,14 +327,16 @@ The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s; none w
 
 ## Verdicts and exit codes
 
-| Verdict      | Meaning                                                                                                                                       |
-|:-------------|:----------------------------------------------------------------------------------------------------------------------------------------------|
-| `pass`       | every required step was observed and passed                                                                                                   |
-| `fail`       | a step failed, or the run stopped before the last step                                                                                        |
-| `unverified` | nothing failed, but a required `confirm` was skipped by `--yes`                                                                               |
-| `error`      | the run broke (missing tool, no board within `--detect-timeout`, crash); the detail names the cause; a missing tool or board ends the session |
-| `aborted`    | Ctrl-C; the session ends, later examples do not start                                                                                         |
-| `skipped`    | the operator declined a requested example; makes the run incomplete                                                                           |
+| Verdict      | Meaning                                                                   |
+|:-------------|:--------------------------------------------------------------------------|
+| `pass`       | every required step was observed and passed                               |
+| `fail`       | a step failed, or the run stopped before the last step                    |
+| `unverified` | nothing failed, but a required `confirm` was skipped by `--yes`           |
+| `error`      | the run broke (missing tool, no board, crash); the detail names the cause |
+| `aborted`    | Ctrl-C; the session ends, later examples do not start                     |
+| `skipped`    | the operator declined a requested example; makes the run incomplete       |
+
+An `error` from a missing tool, or from a board not attached within `--detect-timeout`, ends the session.
 
 `run` exits 0 when every example passed and 3 when the only shortfall is `unverified` or skipped work.
 It exits 1 on any fail, error or abort, 2 on a bench definition error, and 130 on Ctrl-C between examples.
@@ -354,11 +356,14 @@ rustyfarian-bench serve --host 0.0.0.0 --port 8443 --outbox /srv/bench/outbox \
 ```
 
 The host needs `espflash`, a uv-managed Python ≥ 3.12 and a user in the `dialout` group.
-`serve` listens on `127.0.0.1:8000` by default, open and in the clear, for an ssh tunnel; `--token-file` works on loopback too, for a reverse proxy or `tailscale serve` that adds TLS in front.
-Any other `--host` needs `--token-file` and both TLS files, or `serve` exits 2 naming the missing one; see [Tokens and TLS](#tokens-and-tls).
-`--job-timeout` (default 600 s) ends a job that runs too long.
-`--detect-timeout` (default 30 s) fails a job whose board is not attached in that time, so the worker is free for the next job.
 Without the `serve` extra, `serve` prints the install hint and exits 2.
+
+- `serve` listens on `127.0.0.1:8000` by default, open and in the clear, for an ssh tunnel.
+- `--token-file` works on loopback too, for a reverse proxy or `tailscale serve` that adds TLS in front.
+- Any other `--host` needs `--token-file` and both TLS files, or `serve` exits 2 naming the missing one; see [Tokens and TLS](#tokens-and-tls).
+- `--job-timeout` (default 600 s) ends a job that runs too long.
+- `--detect-timeout` (default 30 s) fails a job whose board is not attached in that time, so the worker is free for the next job.
+
 From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just submit <repo> <board> <example> --bench http://127.0.0.1:8000` sends a sibling repo's check to it.
 
 From the client, in a consumer repo whose `bench.toml` has an `image` command:
@@ -467,6 +472,7 @@ Anything in the container's environment is readable by the coding agent; a leake
 ## Development
 
 ```bash
+just setup                # a fresh clone: the locked venv with all extras
 just verify               # ruff, format check, mypy --strict, pytest
 just verify-python 3.12   # the same gate on the declared Python floor
 just smoke-install        # build the wheel and run it through an isolated uvx

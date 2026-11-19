@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# lint.sh — lint deploy/: yamllint, shellcheck, syntax check, ansible-lint, and the cloud-init
-# seed rendered from fixture values. Run through `just deploy-lint`, which passes the pinned
+# lint.sh — lint deploy/ and scripts/: yamllint, shellcheck, syntax check, ansible-lint, and the
+# cloud-init seed rendered from fixture values. Run through `just deploy-lint`, which passes the pinned
 # tool versions as ANSIBLE, ANSIBLE_CORE, ANSIBLE_LINT, YAMLLINT, SHELLCHECK, CHECK_JSONSCHEMA
 # and CLOUD_INIT_SCHEMAS.
 
@@ -11,7 +11,8 @@ ansible_cmd=${ANSIBLE:?run this through just deploy-lint}
 cd "$root/deploy/ansible"
 
 uvx "yamllint@$YAMLLINT" --strict -c ../.yamllint ..
-uvx --from "shellcheck-py==$SHELLCHECK" shellcheck ../*.sh
+# every shell script in the repo: deploy/ and scripts/
+uvx --from "shellcheck-py==$SHELLCHECK" shellcheck ../*.sh ../../scripts/*.sh
 for playbook in site.yml seed.yml ca-init.yml; do
     # shellcheck disable=SC2086
     $ansible_cmd ansible-playbook -i inventory.example.yml --syntax-check "$playbook"
