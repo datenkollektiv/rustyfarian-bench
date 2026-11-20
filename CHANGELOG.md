@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The bench host's Waveshare 3.5" panel shows "rustyfarian bench" and the installed version: a `display` role enables the stock `piscreen` overlay, releases the kernel console from the panel and runs a small Pillow banner service; `just display-smoke` renders the banner on the controller.
+- `deploy/display-probe.sh` identifies an SPI panel on the running Pi without a reboot: it loads an overlay at runtime, paints colour bars and unloads it again.
+
 ## [0.7.0] - 2026-11-20
 
 ### Added

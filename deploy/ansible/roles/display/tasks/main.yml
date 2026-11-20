@@ -1,0 +1,102 @@
+---
+# python3-pil recommends only python3-olefile; neither package pulls in a desktop or a USB-serial grabber
+- name: Install the banner's packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    install_recommends: false
+    name:
+      - fonts-dejavu-core   # DejaVu Sans Bold for the banner
+      - python3-pil         # Pillow draws it
+    state: present
+
+- name: Create the display group
+  ansible.builtin.group:
+    name: "{{ display_user }}"
+    system: true
+
+# the unit grants `video` for /dev/fb*; the user itself owns nothing
+- name: Create the display user
+  ansible.builtin.user:
+    name: "{{ display_user }}"
+    group: "{{ display_user }}"
+    system: true
+    home: /nonexistent
+    create_home: false
+    shell: /usr/sbin/nologin
+
+# Its own `[all]` line, so the overlay applies whatever filter section ends the file. The boot
+# partition is vfat: no owner or mode here, a chmod there fails.
+- name: Enable the panel overlay in config.txt
+  ansible.builtin.blockinfile:
+    path: /boot/firmware/config.txt
+    marker: "# {mark} rustyfarian-bench display"
+    block: |
+      [all]
+      dtoverlay={{ display_dtoverlay }}
+  vars:
+    display_dtoverlay: >-
+      {{ display_overlay }}{{ ',drm' if display_drm else '' }},speed={{ display_spi_hz }},rotate={{ display_rotate }}
+  register: display_config
+
+# Reported, not done, as the base role does; the marker keeps later runs reporting it.
+- name: Report the reboot the overlay needs
+  ansible.builtin.debug:
+    msg: a reboot loads the display overlay; reboot once no job runs, then `just pi-check`
+  when: display_config is changed
+
+- name: Remember the reboot the overlay needs
+  ansible.builtin.file:
+    path: /var/run/reboot-required
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+  when: display_config is changed
+
+# Headless, the panel is framebuffer 0, so the kernel console takes it at boot and blanks it later.
+- name: Release the kernel console from the panel
+  ansible.builtin.copy:
+    src: 90-rustyfarian-bench-display.rules
+    dest: /etc/udev/rules.d/90-rustyfarian-bench-display.rules
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload udev
+
+- name: Install the banner script
+  ansible.builtin.copy:
+    src: rustyfarian-bench-display.py
+    dest: /usr/local/bin/rustyfarian-bench-display
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart the display
+
+# a `--check` run writes no unit, and systemd cannot start or restart one it has never seen
+- name: Look for the display unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/rustyfarian-bench-display.service
+  register: display_unit_file
+
+# bench_version is in the unit, so a bench upgrade restarts the banner with the new number
+- name: Install the display unit
+  ansible.builtin.template:
+    src: rustyfarian-bench-display.service.j2
+    dest: /etc/systemd/system/rustyfarian-bench-display.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: display_unit
+  notify: Restart the display
+
+# before the first reboot the service waits for the panel; it stays active, so this is idempotent
+- name: Start the display
+  ansible.builtin.systemd_service:
+    name: rustyfarian-bench-display
+    enabled: true
+    state: started
+    daemon_reload: "{{ display_unit is changed }}"
+  when: display_unit_file.stat.exists or not ansible_check_mode

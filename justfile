@@ -157,6 +157,8 @@ cryptography := "50.0.2"
 yamllint := "1.38.0"
 check_jsonschema := "0.39.0"
 shellcheck := "0.11.0.1"
+# the python3-pil of Raspberry Pi OS Trixie, which draws the panel banner on the Pi
+pillow := "11.1.0"
 # cloud-init's own JSON schemas at the version Raspberry Pi OS Trixie ships
 cloud_init_schemas := "https://raw.githubusercontent.com/canonical/cloud-init/25.2/cloudinit/config/schemas"
 ansible_dir := justfile_directory() / "deploy" / "ansible"
@@ -185,6 +187,36 @@ deploy-lint: deploy-collections
     ANSIBLE="{{ ansible }}" ANSIBLE_CORE="{{ ansible_core }}" ANSIBLE_LINT="{{ ansible_lint }}" \
         YAMLLINT="{{ yamllint }}" SHELLCHECK="{{ shellcheck }}" CHECK_JSONSCHEMA="{{ check_jsonschema }}" \
         CLOUD_INIT_SCHEMAS="{{ cloud_init_schemas }}" bash "{{ justfile_directory() }}/deploy/lint.sh"
+
+# render the panel banner into tmp/display/ (fake framebuffer plus banner.png), no Pi needed; needs the network for Pillow on the first run
+[group('bench-host')]
+display-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="{{ justfile_directory() }}/tmp/display"
+    script="{{ justfile_directory() }}/deploy/ansible/roles/display/files/rustyfarian-bench-display.py"
+    # the panel's geometry, as fbtft reports it: 480x320 at 16 bits per pixel
+    width=480 height=320
+    stride=$((width * 2))
+    mkdir -p "$dir/sys/fb1" "$dir/dev"
+    : > "$dir/dev/fb1"   # the script opens the node without O_CREAT, as it must on the Pi
+    printf 'ili9486drmfb\n' > "$dir/sys/fb1/name"
+    printf '%s,%s\n' "$width" "$height" > "$dir/sys/fb1/virtual_size"
+    printf '16\n' > "$dir/sys/fb1/bits_per_pixel"
+    printf '%s\n' "$stride" > "$dir/sys/fb1/stride"
+    # the Pi's Python and Pillow, not the project's: the script runs on the system interpreter there
+    BENCH_SYSFS_GRAPHICS="$dir/sys" BENCH_DEV_DIR="$dir/dev" BENCH_VERSION=v0.0.0-smoke \
+        uv run --no-project --python 3.13 --with "pillow=={{ pillow }}" python "$script" --once --png "$dir/banner.png"
+    [ -s "$dir/banner.png" ] || { echo "no banner.png was written" >&2; exit 1; }
+    uv run --no-project --python 3.13 python - "$dir/dev/fb1" "$((stride * height))" <<'EOF'
+    import sys
+    from pathlib import Path
+    data = Path(sys.argv[1]).read_bytes()
+    assert len(data) == int(sys.argv[2]), f"{len(data)} bytes, expected one RGB565 frame of {sys.argv[2]}"
+    assert data[:2] == b"\x00\x00", "the top-left pixel is not black"
+    assert any(data), "nothing was drawn"
+    print("ok -- the banner's bytes look right; see tmp/display/banner.png (Pillow's fallback font without DejaVu)")
+    EOF
 
 # create the bench CA once, straight into shared-secrets/bench.yaml
 [group('bench-host')]
