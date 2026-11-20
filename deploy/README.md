@@ -68,6 +68,7 @@ deploy/
   lint.sh                       # `just deploy-lint`
   sops.example.yaml             # template for the repo root's .sops.yaml (gitignored)
   bench-client.sh               # `just pi-check` and `just pi-submit`: URL, CA and token for the live bench
+  display-probe.sh              # run on the Pi: which SPI panel is it? loads an overlay at runtime, no reboot
   cloud-init/
     user-data.j2                # hostname, admin user, SSH pubkey, no password login, SSH on
     network-config.j2           # netplan: Ethernet DHCP, optional Wi-Fi

@@ -125,3 +125,11 @@ Fix: give every registered field in `fail_msg` the same `default(...)` as in `th
 **A handler queued in a run that fails later never runs, and the next run never queues it again.**
 The first Pi run wrote `/etc/locale.gen` and the sshd drop-in, then failed in the `bench` role before the handlers ran; later runs found both files in place and reported `ok`.
 Fix: `force_handlers = true` in `deploy/ansible/ansible.cfg`, and the locale is now checked against `locale -a` instead of a handler; found 2026-11-16.
+
+---
+
+## Bench Display
+
+**The Waveshare 3.5" (A) on a Pi 5 needs no Waveshare download: the stock `piscreen` overlay drives it, and `dtoverlay piscreen,...` loads it at runtime.**
+Waveshare's guide installs `fbcp`, which uses DispmanX and does not exist on the Pi 5; a white panel after a Lite install is only the backlight with no overlay in `config.txt`.
+`sudo dtoverlay piscreen,speed=16000000` brings the framebuffer up without a reboot and `dtoverlay -r piscreen` takes it down again, which is what the probe does.
