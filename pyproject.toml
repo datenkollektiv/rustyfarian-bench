@@ -1,6 +1,6 @@
 [project]
 name = "rustyfarian-bench"
-version = "0.7.0"
+version = "0.8.0.dev0"
 description = "Guided, rerunnable hardware bench tests for the rustyfarian ESP32 crates"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
@@ -10,6 +10,8 @@ dependencies = ["pyserial>=3.5"]
 [project.optional-dependencies]
 # only for `rustyfarian-bench serve` on the bench host; the base install stays pyserial-only
 serve = ["fastapi>=0.162", "uvicorn>=0.54", "pydantic>=2.14"]
+# only for the `display` role's kiosk renderer on the bench host; the base install stays pyserial-only
+kiosk = ["pillow>=11.1"]
 
 [project.scripts]
 rustyfarian-bench = "rustyfarian_bench.cli:main"

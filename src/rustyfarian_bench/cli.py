@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
+import signal
 import sys
+import threading
 from pathlib import Path
 
-from . import client, config, device, remote, ui
+from . import __version__, client, config, device, remote, ui
 from .runner import Options, Session
 
 
@@ -87,8 +90,41 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         token_file=args.token_file,
         ssl_certfile=args.ssl_certfile,
         ssl_keyfile=args.ssl_keyfile,
+        **({} if args.status_file is None else {"status_file": args.status_file}),
     )
     return 0
+
+
+# Modules the `kiosk` extra brings.
+_KIOSK_MODULES = frozenset({"PIL"})
+
+
+def _cmd_kiosk(args: argparse.Namespace) -> int:
+    try:
+        from . import kiosk
+    except ModuleNotFoundError as e:
+        if (e.name or "").split(".")[0] not in _KIOSK_MODULES:
+            raise
+        ui.warn("kiosk needs Pillow: install `rustyfarian-bench[kiosk]`")
+        return 2
+    logging.basicConfig(format="%(message)s", level=logging.INFO)
+    stop = threading.Event()
+    previous = signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    try:
+        return kiosk.run(
+            args.status_file,
+            title=args.title,
+            address=args.address,
+            version=__version__,
+            fb_match=args.fb_match,
+            sysfs=Path(os.environ.get("BENCH_SYSFS_GRAPHICS", "/sys/class/graphics")),
+            dev_dir=Path(os.environ.get("BENCH_DEV_DIR", "/dev")),
+            png_dir=args.png_dir,
+            once=args.once,
+            wait=stop.wait,
+        )
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,7 +204,43 @@ def main(argv: list[str] | None = None) -> int:
         "--ssl-certfile", type=Path, metavar="PATH", help="TLS certificate; required off loopback"
     )
     serve.add_argument("--ssl-keyfile", type=Path, metavar="PATH", help="its private key")
+    serve.add_argument(
+        "--status-file",
+        type=Path,
+        metavar="PATH",
+        help="keep this world-readable status file for the kiosk panel (off by default)",
+    )
     serve.set_defaults(func=_cmd_serve)
+
+    kiosk = sub.add_parser(
+        "kiosk", help="draw the bench status on the SPI panel (needs the kiosk extra)"
+    )
+    kiosk.add_argument(
+        "--status-file",
+        type=Path,
+        # the same path as in the serve and display unit templates under deploy/ansible/roles
+        default=Path("/run/rustyfarian-bench/status.json"),
+        metavar="PATH",
+        help="the file `serve --status-file` keeps (default: %(default)s)",
+    )
+    kiosk.add_argument(
+        "--title",
+        default=os.environ.get("BENCH_TITLE", "rustyfarian bench"),
+        help="banner title (default: $BENCH_TITLE or %(default)s)",
+    )
+    kiosk.add_argument(
+        "--address",
+        default=os.environ.get("BENCH_ADDRESS", ""),
+        help="where the bench is reached, shown when idle (default: $BENCH_ADDRESS)",
+    )
+    kiosk.add_argument(
+        "--fb-match",
+        default=os.environ.get("BENCH_FB_MATCH", "ili9486"),
+        help="part of the panel's framebuffer name (default: $BENCH_FB_MATCH or %(default)s)",
+    )
+    kiosk.add_argument("--once", action="store_true", help="draw once and exit")
+    kiosk.add_argument("--png-dir", type=Path, help="also save each screen drawn there as a PNG")
+    kiosk.set_defaults(func=_cmd_kiosk)
 
     sub.add_parser("list", help="list scenarios").set_defaults(func=_cmd_list)
     sub.add_parser("detect", help="probe connected boards").set_defaults(func=_cmd_detect)

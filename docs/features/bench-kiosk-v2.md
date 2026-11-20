@@ -35,22 +35,24 @@ v1 decisions carry over (`bench-kiosk-v1.md`): stock `piscreen` DRM overlay, Pil
 - No SSH from the controller; Pi checks are scripts the user runs and pastes back.
 
 ## Open Questions
-- [ ] Address on the idle screen: does `serve` put it in the status file, or Ansible in the unit environment?
-- [ ] Does Pillow ship cp313 manylinux aarch64 wheels, and does it pass `mypy --strict`?
-- [ ] Verdict history comes from an outbox scan; how many rows stay once outbox retention lands?
-- [ ] Is a `maintenance` state reserved in the status record for Bench maintenance mode?
+- [x] Address on the idle screen: Ansible sets `BENCH_ADDRESS` from `display_address`; the status file never holds it.
+- [x] Pillow: the lock's 13.0.0 ships a cp313 manylinux aarch64 wheel and its own types, so `mypy --strict` needs no stubs.
+- [x] History vs retention: retention must keep the newest 5 finished jobs, noted in its roadmap entry.
+- [x] `maintenance` is reserved in schema 1: v2 never writes it, the kiosk draws it.
 - [ ] SPI speed (from v1): stays 16 MHz unless the 1 s refresh proves too slow.
 - [ ] Log tail: revisit in a later version once retention and NVS settle what logs may hold.
 
 ## State
 - [x] Design approved
 - [x] `bench_version` v0.7.0 on the Pi (the panel shows it; the `changed=0` re-run moves to the final Pi check)
-- [ ] Status writer in `serve` with tests (python-pro, test-automator, plan mode)
-- [ ] `kiosk` subcommand, `[kiosk]` extra, display role switched to it
-- [ ] `just display-smoke` renders fixtures: idle, running, queued, long names, stale, stopped
+- [x] Status writer in `serve` with tests (python-pro, test-automator, plan mode)
+- [x] `kiosk` subcommand, `[kiosk]` extra, display role switched to it
+- [x] `just display-smoke` renders fixtures: idle, running, queued, long names, stale, stopped, maintenance
 - [ ] Pi: tagged release installed, panel shows a job, second run `changed=0`
-- [ ] Documentation updated: `deploy/README.md` "What comes next", CHANGELOG, roadmap
+- [x] Documentation updated: `deploy/README.md` "What comes next", CHANGELOG, roadmap
 
 ## Session Log
 - 2026-11-20 — Feature doc created via /feature dialog after a five-agent analysis workflow; status file, layout A, `kiosk` subcommand, draw on change
 - 2026-11-20 — Updated: gate cleared (panel proven on the Pi, shows v0.7.0); decisions confirmed unchanged
+- 2026-11-21 — Implemented: status writer, `Worker(observer=)`, `serve --status-file`, `kiosk` and `[kiosk]`, display role switched; four open questions resolved by the approved plan
+- 2026-11-21 — Pi: `just pi-provision-dev` (v0.8.0.dev0) installed; the panel showed a live `esp32` `hal_esp32_connect_async` run (pass 3/3, seen by the user); second run `ok=62 changed=0`; `pi-accept.sh`: modes, contents, isolation and units pass, heartbeat section not yet seen

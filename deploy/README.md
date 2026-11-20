@@ -56,7 +56,7 @@ So cloud-init does the minimum to make the Pi reachable, and every decision that
 - Raspberry Pi 5 with the official 27 W USB-C supply.
 - A powered USB hub for the boards: the Pi 5 limits USB current without the 5 A supply, and a board that browns out mid-flash looks like a firmware bug.
 - Ethernet preferred; Wi-Fi works through `network-config`.
-- Waveshare 3.5" display (A): shows the bench banner with the installed version, see the `display` role; the job view is [what comes next](#what-comes-next).
+- Waveshare 3.5" display (A): shows the running job and the last verdicts, see the `display` role.
 
 ## Layout
 
@@ -86,7 +86,7 @@ deploy/
       base/                     # OS updates, SSH hardening, firewall, USB-serial hygiene
       tools/                    # uv and espflash as pinned, checksummed binaries
       bench/                    # bench user, rustyfarian-bench, secrets, systemd unit
-      display/                  # the Waveshare 3.5": overlay, console release, banner service
+      display/                  # the Waveshare 3.5": overlay, console release, kiosk service
 ```
 
 ## Prerequisites on the controller
@@ -290,7 +290,8 @@ Compiling espflash on the Pi would need a Rust toolchain and many minutes; the p
 **`bench`** — the service itself:
 
 - a system user `bench` in `dialout`, with `/srv/bench` as home and the outbox in `/srv/bench/outbox`;
-- `rustyfarian-bench[serve]` installed with `uv tool install` from the git tag in `bench_version`, root-owned under `/opt/rustyfarian-bench`, so the service cannot rewrite its own code;
+- `rustyfarian-bench[serve,kiosk]` installed with `uv tool install` from the git tag in `bench_version`, root-owned under `/opt/rustyfarian-bench`, so the service cannot rewrite its own code;
+- the `kiosk` extra (Pillow) in that install, for the `display` role;
 - `/etc/rustyfarian-bench/` with `cert.pem`, `key.pem` and `tokens.toml`, the last rendered from `bench_tokens` with `no_log`, all owned `root:bench`, mode `0640`;
 - a systemd unit running:
 
@@ -300,7 +301,8 @@ rustyfarian-bench serve --host 0.0.0.0 --port 8443 \
     --job-timeout 600 --detect-timeout 30 \
     --token-file /etc/rustyfarian-bench/tokens.toml \
     --ssl-certfile /etc/rustyfarian-bench/cert.pem \
-    --ssl-keyfile /etc/rustyfarian-bench/key.pem
+    --ssl-keyfile /etc/rustyfarian-bench/key.pem \
+    --status-file /run/rustyfarian-bench/status.json
 ```
 
 The unit's choices, and why:
@@ -312,13 +314,17 @@ The unit's choices, and why:
 | `Restart=on-failure`                               | a crash restarts; a restart marks the interrupted job as `error`      |
 | `StartLimitBurst=5` in 300 s                       | a bad token file ends `serve` at start; no endless restart loop       |
 | `Environment=HOME=/srv/bench`                      | espflash may keep its config there, the one writable place            |
-| `ProtectSystem=strict`, `ReadWritePaths=/srv/bench`| the service writes only its outbox                                    |
+| `ProtectSystem=strict`, `ReadWritePaths=/srv/bench`| the service writes only its outbox and its runtime directory          |
+| `RuntimeDirectory=rustyfarian-bench`, mode `0755`  | the kiosk reads `status.json` there; systemd removes it when `serve` stops |
 | `NoNewPrivileges`, `PrivateTmp`, `ProtectHome`     | cheap hardening                                                       |
 | no capabilities, `Protect*`, `Restrict*`, `UMask=0077` | a network service that runs uploaded images gets nothing it does not need |
 | no `PrivateDevices`                                | boards re-enumerate after a flash, and new `/dev/tty*` must be visible|
 
 `serve` sets `ESPFLASH_SKIP_UPDATE_CHECK=true` for espflash itself, so the unit does not.
 `serve` re-reads the token file on every request, so changing tokens never restarts the service.
+The status file is world-readable (`0644`), so it holds only what the panel draws: state, queue length, the running job's board, example, start and step, and the last 5 verdicts.
+It never holds a job id, a submitter, a check, a detail or log text.
+`serve` rewrites it on every job change and every 10 s as a heartbeat.
 
 The play refuses four changes while any job's `job.json` is not `done`, unless `-e bench_force_restart=true` is given:
 
@@ -335,14 +341,21 @@ Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
 - the read is a snapshot, so a job submitted during the run still meets the upgrade, the tool or the restart;
 - `unattended-upgrades` installs Debian's fixes daily without this guard, accepted since neither `serve` nor espflash comes from apt and a job runs in a fresh child process, so a Python patch release lands under a job at worst.
 
-**`display`** — the Waveshare 3.5" panel, first light for the kiosk:
+**`display`** — the Waveshare 3.5" panel as the bench's kiosk:
 
 - `dtoverlay=piscreen,drm,speed=16000000,rotate=180` in a managed block at the end of `/boot/firmware/config.txt`: the stock Raspberry Pi overlay drives this panel through the mainline DRM driver, found with `deploy/display-probe.sh` (`display_drm: false` picks the fbtft driver, also proven, which counts its rotation from 270 and wants 90); the overlay loads at the next reboot, which the run reports and never does;
 - a udev rule that releases the kernel console from the panel: headless, the panel is framebuffer 0, so fbcon would show the login prompt on it and blank it after ten minutes (`echo 1 > /sys/class/vtconsole/vtconN/bind` gives the console back);
 - a system user `bench-display`, whose hardened unit `rustyfarian-bench-display.service` gets the `video` group and the framebuffer device and nothing else, no network included;
-- `/usr/local/bin/rustyfarian-bench-display`, a Pillow script: it waits for the panel's framebuffer, draws "rustyfarian bench" and `bench_version`, and sleeps until stopped, when it draws "good-bye" (so the panel says so at shutdown); a bench upgrade changes the unit and restarts it with the new number.
+- the unit runs `rustyfarian-bench kiosk` from the bench's install, which waits for the panel's framebuffer, reads `/run/rustyfarian-bench/status.json` once a second and writes a frame only when the screen changes;
+- while a job runs, the panel shows its board, example, elapsed time and step bar, then the last 5 verdicts;
+- when idle, it shows "rustyfarian bench", the installed version, the address from `display_address` (default `bench_fqdn:bench_port`) and the last 5 verdicts;
+- a heartbeat older than 30 s shows "status is stale", a missing file "bench offline", and a stop at shutdown "good-bye";
+- a bench upgrade changes `bench_version` in the unit, which restarts the kiosk from the new install;
+- the play fails when `bench_version` is older than `display_kiosk_since` (v0.8.0), the first release with `kiosk`;
+- the v1 leftovers `/usr/local/bin/rustyfarian-bench-display` and `python3-pil` are removed without `autoremove`, so nothing else apt marks unused goes with them.
 
-`just display-smoke` renders the banner on the controller into `tmp/display/banner.png` and a fake framebuffer, with the Pi's Pillow version and its fallback font where DejaVu is absent, so a layout change is seen before it reaches the Pi.
+`just display-smoke` installs `rustyfarian-bench[kiosk]` on the controller as the Pi does, into `tmp/display/`, and renders status fixtures there with `kiosk --once --png-dir`: idle, running, queued, long names, stale, stopped and maintenance.
+It checks each frame's size, that the screens differ and that a stop draws the farewell, using Pillow's fallback font where DejaVu is absent, so a layout change is seen before it reaches the Pi.
 
 ## Step 4 — Check it
 
@@ -360,7 +373,7 @@ just pi-check             # the first token in bench.yaml; `just pi-check laptop
 The token reaches `curl` through a pipe, never through its arguments.
 `detect` probes every port, so run `pi-check` while no job runs.
 
-After the first reboot the panel shows the banner with `bench_version`; if it stays white, `journalctl -u rustyfarian-bench-display` on the Pi says whether the framebuffer was found.
+After the first reboot the panel shows the idle screen with the version and the address; if it stays white, `journalctl -u rustyfarian-bench-display` on the Pi says whether the framebuffer was found.
 
 Then the real test, a consumer's check run on the Pi:
 
@@ -388,7 +401,8 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Task                    | How                                                                  |
 |:------------------------|:---------------------------------------------------------------------|
 | Upgrade the bench       | bump `bench_version` (a release tag), `just pi-provision`            |
-| Roll back the bench     | set `bench_version` to the previous tag, `just pi-provision`         |
+| Roll back the bench     | set `bench_version` to the previous tag, `just pi-provision`; below v0.8.0 see below |
+| Test unreleased code    | a `.devN` version in `pyproject.toml`, `just pi-provision-dev`       |
 | Upgrade the OS          | `just pi-upgrade`                                                    |
 | Reboot after it         | when reported: `sudo reboot` on the Pi once no job runs, then `just pi-check` |
 | Check for drift         | `just pi-provision --check --diff` previews; `just pi-idempotent` applies twice |
@@ -402,6 +416,8 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Panel white or stale    | `journalctl -u rustyfarian-bench-display`; `display-probe.sh` loads the overlay live |
 
 `pi-upgrade`, a tool bump and a restart are refused while a job is unfinished; see the `bench` role above.
+A rollback below v0.8.0 runs `just pi-provision` from a checkout of the matching repo tag, since this checkout's `display` role runs `kiosk` and refuses an older `bench_version`.
+`just pi-provision-dev` builds a wheel of the checkout (`just dev-wheel`), copies it to the Pi and installs it as `bench_version` v`X.Y.Z.devN`; a rebuilt wheel reinstalls and restarts `serve` and the kiosk, an unchanged one is skipped, and the next release tag replaces it.
 Change the Wi-Fi over Ethernet: the link changes mid-run.
 
 ## Design decisions
@@ -422,6 +438,7 @@ Change the Wi-Fi over Ethernet: the link changes mid-run.
 
 ## What comes next
 
-The panel becomes a kiosk showing the bench's queue: the running job, its board and its live log tail, and the last verdicts.
-That needs a read-only job list in `serve`, which it does not have yet; the banner script of the `display` role then polls it and redraws, instead of a browser.
+The panel shows the bench's queue since v0.8.0, from the status file `serve` keeps; `docs/features/bench-kiosk-v2.md` has the design.
+The status file reserves a `maintenance` state, which the kiosk already draws, for the maintenance mode on the roadmap.
+A live log tail stays off the panel until outbox retention and the NVS work settle what a log may hold.
 A Wayland compositor on the panel stays possible, since the DRM variant makes it a KMS device; `fbcon=map:` and Chromium were weighed and left aside, see `docs/features/bench-kiosk-v1.md`.

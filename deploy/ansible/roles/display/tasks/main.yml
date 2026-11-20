@@ -1,13 +1,22 @@
 ---
-# python3-pil recommends only python3-olefile; neither package pulls in a desktop or a USB-serial grabber
-- name: Install the banner's packages
+# The unit runs the installed `rustyfarian-bench kiosk`, which older releases lack; a rollback
+# below it must fail here, not leave a unit that restarts until systemd gives up.
+- name: Check that bench_version has the kiosk
+  ansible.builtin.assert:
+    that: bench_version[1:] is version(display_kiosk_since, '>=')
+    fail_msg: >-
+      the display role runs `rustyfarian-bench kiosk`, which needs bench_version
+      v{{ display_kiosk_since }} or later, not {{ bench_version }}
+    quiet: true
+
+# Pillow comes with the bench's `[kiosk]` extra
+- name: Install the kiosk's font
   ansible.builtin.apt:
     update_cache: true
     cache_valid_time: 3600
     install_recommends: false
     name:
-      - fonts-dejavu-core   # DejaVu Sans Bold for the banner
-      - python3-pil         # Pillow draws it
+      - fonts-dejavu-core   # DejaVu Sans Bold for the kiosk
     state: present
 
 - name: Create the display group
@@ -66,22 +75,13 @@
     mode: "0644"
   notify: Reload udev
 
-- name: Install the banner script
-  ansible.builtin.copy:
-    src: rustyfarian-bench-display.py
-    dest: /usr/local/bin/rustyfarian-bench-display
-    owner: root
-    group: root
-    mode: "0755"
-  notify: Restart the display
-
 # a `--check` run writes no unit, and systemd cannot start or restart one it has never seen
 - name: Look for the display unit
   ansible.builtin.stat:
     path: /etc/systemd/system/rustyfarian-bench-display.service
   register: display_unit_file
 
-# bench_version is in the unit, so a bench upgrade restarts the banner with the new number
+# bench_version is in the unit, so a bench upgrade restarts the kiosk from the new install
 - name: Install the display unit
   ansible.builtin.template:
     src: rustyfarian-bench-display.service.j2
@@ -100,3 +100,21 @@
     state: started
     daemon_reload: "{{ display_unit is changed }}"
   when: display_unit_file.stat.exists or not ansible_check_mode
+
+# --- v1 leftovers, removed once the kiosk has replaced the banner script ---
+
+- name: Switch to the kiosk before the cleanup
+  ansible.builtin.meta: flush_handlers
+
+- name: Remove the v1 banner script
+  ansible.builtin.file:
+    path: /usr/local/bin/rustyfarian-bench-display
+    state: absent
+
+# only the package v1 installed; whatever else apt marks unused stays for the admin to judge
+- name: Remove the v1 banner's Pillow
+  ansible.builtin.apt:
+    name: python3-pil
+    state: absent
+    autoremove: false
+    purge: false

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import hmac
+import json
 import os
+import threading
 from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
@@ -16,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from rustyfarian_bench import remote, server
 from rustyfarian_bench.config import ConfigError
+from rustyfarian_bench.status import StatusWriter
 
 from .fakes import wait_until
 from .test_remote import (
@@ -635,3 +638,84 @@ def test_create_app_hands_the_detect_timeout_to_the_worker(
     [kwargs] = seen
     assert kwargs["detect_timeout"] == expected
     assert kwargs["timeout"] == 12.0
+
+
+# -- the kiosk status file -----------------------------------------------------------------------
+
+
+def status_of(path: Path) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(path.read_text())
+    return data
+
+
+def test_the_status_file_follows_a_job_and_goes_with_the_server(
+    outbox: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "run" / "status.json"
+    path.parent.mkdir()
+    gate = threading.Event()
+
+    def gated(job_dir: Path) -> None:
+        gate.wait(10.0)
+        remote.run_job(job_dir, 30, child("pass", "all good"))
+
+    writer = StatusWriter(path, outbox, version="9.9.9")
+    try:
+        with TestClient(server.create_app(outbox, runner=gated, status=writer)) as c:
+            assert status_of(path)["state"] == "idle"
+
+            first = c.post("/jobs", json=body()).json()["id"]
+            assert wait_until(lambda: status_of(path)["state"] == "running", 5.0)
+            assert status_of(path)["running"]["example"] == "ex1"
+
+            second = c.post("/jobs", json=body()).json()["id"]
+            assert status_of(path)["queued"] == 1
+
+            gate.set()
+            assert wait_until(lambda: finished(c, first) and finished(c, second), 10.0)
+            assert wait_until(lambda: len(status_of(path)["history"]) == 2, 5.0)
+            done = status_of(path)
+            assert (done["state"], done["queued"]) == ("idle", 0)
+            assert [h["verdict"] for h in done["history"]] == ["pass", "pass"]
+        assert not path.exists()  # lifespan exit removed it
+    finally:
+        gate.set()
+        writer.stop()
+
+
+def test_a_status_writer_in_a_missing_directory_still_serves(
+    outbox: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "no-such-dir" / "status.json"
+    writer = StatusWriter(path, outbox, version="9.9.9")
+
+    with TestClient(
+        server.create_app(outbox, runner=run_child(child("pass", "all good")), status=writer)
+    ) as c:
+        job_id = c.post("/jobs", json=body()).json()["id"]
+        assert wait_until(lambda: finished(c, job_id), 10.0)
+        assert c.get(f"/jobs/{job_id}").json()["job"]["verdict"] == "pass"
+
+    assert not path.exists()
+    assert "status file" in capsys.readouterr().err
+
+
+def test_serve_builds_a_status_writer_only_with_a_status_file(
+    outbox: Path, tmp_path: Path, uvicorn_run: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[StatusWriter | None] = []
+    real = server.create_app
+
+    def spy(*a: Any, **kw: Any) -> Any:
+        seen.append(kw.get("status"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(server, "create_app", spy)
+
+    server.serve("127.0.0.1", 8000, outbox, 600.0)
+    server.serve("127.0.0.1", 8000, outbox, 600.0, status_file=tmp_path / "s.json")
+
+    assert seen[0] is None
+    assert isinstance(seen[1], StatusWriter)
+    assert len(uvicorn_run) == 2
+    assert not (tmp_path / "s.json").exists()  # uvicorn is faked: no lifespan ran

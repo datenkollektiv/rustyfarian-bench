@@ -157,8 +157,6 @@ cryptography := "50.0.2"
 yamllint := "1.38.0"
 check_jsonschema := "0.39.0"
 shellcheck := "0.11.0.1"
-# the python3-pil of Raspberry Pi OS Trixie, which draws the panel banner on the Pi
-pillow := "11.1.0"
 # cloud-init's own JSON schemas at the version Raspberry Pi OS Trixie ships
 cloud_init_schemas := "https://raw.githubusercontent.com/canonical/cloud-init/25.2/cloudinit/config/schemas"
 ansible_dir := justfile_directory() / "deploy" / "ansible"
@@ -188,48 +186,128 @@ deploy-lint: deploy-collections
         YAMLLINT="{{ yamllint }}" SHELLCHECK="{{ shellcheck }}" CHECK_JSONSCHEMA="{{ check_jsonschema }}" \
         CLOUD_INIT_SCHEMAS="{{ cloud_init_schemas }}" bash "{{ justfile_directory() }}/deploy/lint.sh"
 
-# render the panel banner and the farewell into tmp/display/ (fake framebuffer plus PNGs), no Pi needed; needs the network for Pillow on the first run
+# render each kiosk screen (idle, running, queued, long names, stale, stopped, maintenance) and the farewell into tmp/display/ from fixture status files (fake framebuffer plus PNGs), no Pi needed; needs the network for Pillow until it is cached
 [group('bench-host')]
 display-smoke:
     #!/usr/bin/env bash
     set -euo pipefail
     dir="{{ justfile_directory() }}/tmp/display"
-    script="{{ justfile_directory() }}/deploy/ansible/roles/display/files/rustyfarian-bench-display.py"
-    # the panel's geometry, as fbtft reports it: 480x320 at 16 bits per pixel
-    width=480 height=320
+    # the package with the kiosk extra in its own tool venv on the Pi's Python, as the Pi installs it;
+    # kept under tmp/display, so neither .venv nor ~/.local is touched; --reinstall-package picks up src/ edits and reuses the cached Pillow wheel
+    UV_TOOL_DIR="$dir/tools" UV_TOOL_BIN_DIR="$dir/bin" uv tool install --quiet --reinstall-package rustyfarian-bench --python 3.13 \
+        "rustyfarian-bench[kiosk] @ $(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).as_uri())' "{{ justfile_directory() }}")"
+    bench="$dir/bin/rustyfarian-bench"
+    python="$dir/tools/rustyfarian-bench/bin/python"
+    # the panel's geometry, as fbtft reports it: the layout's size at 16 bits per pixel
+    read -r width height < <("$python" -c 'from rustyfarian_bench.kiosk_layout import HEIGHT, WIDTH; print(WIDTH, HEIGHT)')
     stride=$((width * 2))
-    mkdir -p "$dir/sys/fb1" "$dir/dev"
-    : > "$dir/dev/fb1"   # the script opens the node without O_CREAT, as it must on the Pi
+    mkdir -p "$dir/sys/fb1" "$dir/dev" "$dir/status" "$dir/png"
+    rm -f "$dir"/*.png "$dir"/*.fb "$dir"/*.log "$dir"/status/*.json "$dir"/png/*.png
+    : > "$dir/dev/fb1"   # the kiosk opens the node without O_CREAT, as it must on the Pi
     printf 'ili9486drmfb\n' > "$dir/sys/fb1/name"
     printf '%s,%s\n' "$width" "$height" > "$dir/sys/fb1/virtual_size"
     printf '16\n' > "$dir/sys/fb1/bits_per_pixel"
     printf '%s\n' "$stride" > "$dir/sys/fb1/stride"
-    # the Pi's Python and Pillow, not the project's: the script runs on the system interpreter there
-    BENCH_SYSFS_GRAPHICS="$dir/sys" BENCH_DEV_DIR="$dir/dev" BENCH_VERSION=v0.0.0-smoke \
-        uv run --no-project --python 3.13 --with "pillow=={{ pillow }}" python "$script" --once --png "$dir/banner.png"
-    [ -s "$dir/banner.png" ] || { echo "no banner.png was written" >&2; exit 1; }
-    uv run --no-project --python 3.13 python - "$dir/dev/fb1" "$((stride * height))" <<'EOF'
+    # one status file per screen, as `serve --status-file` writes it (schema 1), timed relative to now;
+    # "stopped" is the missing file
+    "$python" - "$dir/status" <<'EOF'
+    import json
+    import sys
+    from datetime import UTC, datetime, timedelta
+    from pathlib import Path
+
+    out, now = Path(sys.argv[1]), datetime.now(UTC)
+
+    def ago(seconds):
+        return (now - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+    def record(state="idle", updated=0, queued=0, running=None, history=()):
+        return {"schema": 1, "state": state, "updated": ago(updated), "version": "0.0.0-smoke",
+                "queued": queued, "running": running, "history": list(history)}
+
+    def verdict(verdict, board, example, finished):
+        return {"verdict": verdict, "board": board, "example": example, "finished": ago(finished)}
+
+    history = [
+        verdict("pass", "c3-mini-1", "hal_c3_connect_async", 20),
+        verdict("fail", "s3-devkit", "wifi_scan", 7 * 60),
+        verdict("error", "c3-mini-1", "hal_c3_mqtt", 3 * 3600),
+        verdict("unverified", "c6-devkit", "ws2812_rainbow", 26 * 3600),
+        verdict("pass", "s3-devkit", "blinky", 3 * 86400),
+    ]
+    running = {"board": "c3-mini-1", "example": "hal_c3_connect_async", "started": ago(95),
+               "step": 2, "total": 4}
+    long_board, long_example = "esp32-c3-super-mini-on-the-pogo-rig", "hal_c3_connect_async_with_retries_and_backoff"
+    cases = {
+        "idle": record(history=history),
+        "running": record("running", running=running, history=history),
+        # before the first step line, with more jobs waiting
+        "queued": record("running", queued=2, running={**running, "step": None, "total": None},
+                         history=history),
+        "long-names": record("running", running={"board": long_board, "example": long_example,
+                                                 "started": ago(3725), "step": 11, "total": 12},
+                             history=[verdict("pass", long_board, long_example, 10)] + history[:4]),
+        "stale": record(updated=5 * 60, history=history),
+        "maintenance": record("maintenance", history=history),
+    }
+    for name, data in cases.items():
+        (out / f"{name}.json").write_text(json.dumps(data) + "\n")
+    EOF
+    export BENCH_SYSFS_GRAPHICS="$dir/sys" BENCH_DEV_DIR="$dir/dev" BENCH_ADDRESS=bench.example:8443
+    # case:the screen the kiosk must say it drew
+    cases=(idle:idle running:running queued:running long-names:running stale:stale stopped:stopped maintenance:maintenance)
+    names=()
+    for case in "${cases[@]}"; do
+        name=${case%%:*} view=${case#*:}
+        names+=("$name")
+        if ! "$bench" kiosk --once --status-file "$dir/status/$name.json" --png-dir "$dir/png" 2> "$dir/$name.log"; then
+            cat "$dir/$name.log" >&2; echo "$name: the kiosk failed" >&2; exit 1
+        fi
+        grep -q "drawn on fb1: $view\$" "$dir/$name.log" || { cat "$dir/$name.log" >&2; echo "$name: expected the $view screen" >&2; exit 1; }
+        [ -s "$dir/png/kiosk.png" ] || { echo "$name: no PNG was written" >&2; exit 1; }
+        mv "$dir/png/kiosk.png" "$dir/$name.png"
+        cp "$dir/dev/fb1" "$dir/$name.fb"
+    done
+    "$python" - "$dir" "$((stride * height))" "${names[@]}" <<'EOF'
     import sys
     from pathlib import Path
-    data = Path(sys.argv[1]).read_bytes()
-    assert len(data) == int(sys.argv[2]), f"{len(data)} bytes, expected one RGB565 frame of {sys.argv[2]}"
-    assert data[:2] == b"\x00\x00", "the top-left pixel is not black"
-    assert any(data), "nothing was drawn"
-    print("ok -- the banner's bytes look right; see tmp/display/banner.png (Pillow's fallback font without DejaVu)")
+    root, size = Path(sys.argv[1]), int(sys.argv[2])
+    frames = {name: (root / f"{name}.fb").read_bytes() for name in sys.argv[3:]}
+    for name, data in frames.items():
+        assert len(data) == size, f"{name}: {len(data)} bytes, expected one RGB565 frame of {size}"
+        assert any(data), f"{name}: nothing was drawn"
+    assert frames["idle"] != frames["running"], "idle and running draw the same frame"
+    assert frames["stale"] != frames["idle"], "stale and idle draw the same frame"
+    # queued and long-names share the running view, but their records differ
+    assert len(set(frames.values())) == len(frames), "two different screens drew the same frame"
+    print(f"ok -- {len(frames)} screens drawn; see tmp/display/*.png (Pillow's fallback font without DejaVu)")
     EOF
-    # the stop path, as at shutdown: the service draws the farewell over the banner on SIGTERM,
-    # which `uv run` forwards to the script
-    cp "$dir/dev/fb1" "$dir/banner.fb"
-    BENCH_SYSFS_GRAPHICS="$dir/sys" BENCH_DEV_DIR="$dir/dev" BENCH_VERSION=v0.0.0-smoke \
-        uv run --no-project --python 3.13 --with "pillow=={{ pillow }}" python "$script" --png "$dir/farewell.png" 2> "$dir/service.log" &
+    # the stop path, as at shutdown: the kiosk draws the farewell over the idle screen on SIGTERM
+    # the fixtures were timed up front: refresh the idle one so seven slow cases cannot make it stale
+    "$python" - "$dir/status/idle.json" <<'EOF'
+    import json
+    import sys
+    from datetime import UTC, datetime
+    from pathlib import Path
+    path = Path(sys.argv[1])
+    data = json.loads(path.read_text())
+    data["updated"] = datetime.now(UTC).isoformat(timespec="seconds")
+    path.write_text(json.dumps(data) + "\n")
+    EOF
+    "$bench" kiosk --status-file "$dir/status/idle.json" --png-dir "$dir/png" 2> "$dir/service.log" &
     pid=$!
-    for _ in $(seq 50); do grep -q 'until stopped' "$dir/service.log" && break; sleep 0.2; done
-    if ! grep -q 'until stopped' "$dir/service.log"; then
-        kill "$pid"; cat "$dir/service.log" >&2; echo "the service never settled on the banner" >&2; exit 1
+    trap 'kill "$pid" 2>/dev/null || true' EXIT   # no orphaned kiosk on Ctrl-C or an early exit
+    for _ in $(seq 50); do grep -q 'drawn on fb1: idle$' "$dir/service.log" && break; sleep 0.2; done
+    if ! grep -q 'drawn on fb1: idle$' "$dir/service.log"; then
+        kill "$pid" 2>/dev/null || true; cat "$dir/service.log" >&2; echo "the kiosk never drew the idle screen" >&2; exit 1
     fi
+    cp "$dir/dev/fb1" "$dir/before-stop.fb"
     kill -TERM "$pid"
-    wait "$pid" || { cat "$dir/service.log" >&2; echo "the service did not stop cleanly" >&2; exit 1; }
-    if cmp -s "$dir/banner.fb" "$dir/dev/fb1"; then echo "no farewell was drawn on stop" >&2; exit 1; fi
+    wait "$pid" || { cat "$dir/service.log" >&2; echo "the kiosk did not stop cleanly" >&2; exit 1; }
+    trap - EXIT
+    [ -s "$dir/png/kiosk-farewell.png" ] || { echo "no farewell PNG was written" >&2; exit 1; }
+    mv "$dir/png/kiosk-farewell.png" "$dir/farewell.png"
+    if cmp -s "$dir/before-stop.fb" "$dir/dev/fb1"; then echo "no farewell was drawn on stop" >&2; exit 1; fi
     echo "ok -- a stop draws the farewell; see tmp/display/farewell.png"
 
 # create the bench CA once, straight into shared-secrets/bench.yaml
@@ -266,6 +344,35 @@ pi-seed bootfs: deploy-collections
 [positional-arguments]
 pi-provision *args: deploy-lint
     cd "{{ ansible_dir }}" && {{ ansible }} ansible-playbook site.yml "$@"
+
+# build a wheel of this checkout into tmp/dist-dev and print its path; its version must be a .devN one
+[group('bench-host')]
+dev-wheel:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dist="{{ justfile_directory() }}/tmp/dist-dev"
+    mkdir -p "$dist"
+    rm -f "$dist"/*.whl
+    uv build --wheel --quiet --out-dir "$dist" "{{ justfile_directory() }}" >&2
+    wheel=$(ls "$dist"/*.whl)
+    version=$(basename "$wheel" | cut -d- -f2)
+    case "$version" in
+        *.dev[0-9]*) echo "$wheel" ;;
+        *) echo "dev-wheel wants a .devN version in pyproject.toml, not $version" >&2; exit 1 ;;
+    esac
+
+# provision the bench host with this checkout instead of a release tag, as its .devN version; run it twice for the changed=0 check
+[group('bench-host')]
+[positional-arguments]
+pi-provision-dev *args: deploy-lint
+    #!/usr/bin/env bash
+    set -euo pipefail
+    wheel=$("{{ just_executable() }}" --justfile "{{ justfile() }}" dev-wheel)
+    version=$(basename "$wheel" | cut -d- -f2)
+    cd "{{ ansible_dir }}"
+    # JSON, not key=value, so a checkout path with a space stays one value
+    vars=$(printf '{"bench_wheel": "%s", "bench_version": "v%s"}' "$wheel" "$version")
+    {{ ansible }} ansible-playbook site.yml -e "$vars" "$@"
 
 # provision with `apt full-upgrade`, refused while a job is unfinished; reports a pending reboot
 [group('bench-host')]

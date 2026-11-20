@@ -459,6 +459,7 @@ class Worker:
 
     `runner(job_dir)` runs one job; the default is `run_job`, whose child process the worker
     keeps track of so `stop` can end it. A runner that raises never stops the worker.
+    `observer(event, job_dir)` hears `"start"` and `"end"` of each job; it never affects the job.
     """
 
     def __init__(
@@ -468,8 +469,10 @@ class Worker:
         timeout: float = 600.0,
         argv: Sequence[str] | None = None,
         detect_timeout: float | None = DETECT_TIMEOUT,
+        observer: Callable[[str, Path], None] | None = None,
     ):
         self._runner = runner or self._run_tracked
+        self._observer = observer
         self._timeout = timeout
         self._argv = argv
         self._detect_timeout = detect_timeout
@@ -516,6 +519,7 @@ class Worker:
         while (job_dir := self._queue.get()) is not None:
             if self._stopping:
                 break
+            self._observe("start", job_dir)
             try:
                 self._runner(job_dir)
             except Exception as e:
@@ -523,3 +527,9 @@ class Worker:
                     job = _load(job_dir)
                     if job is not None and job.status != DONE:
                         _finish(job_dir, job, "error", f"{type(e).__name__}: {e}", None)
+            self._observe("end", job_dir)
+
+    def _observe(self, event: str, job_dir: Path) -> None:
+        if self._observer is not None:
+            with contextlib.suppress(Exception):
+                self._observer(event, job_dir)

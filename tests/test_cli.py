@@ -348,3 +348,99 @@ def test_submit_without_a_bench_url_anywhere_names_both_ways(
     assert "--bench" in err
     assert "RUSTYFARIAN_BENCH_URL" in err
     assert seen == []
+
+
+def test_serve_passes_a_status_file_only_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _fake_serve(monkeypatch)
+
+    assert cli.main(["serve", "--status-file", "run/status.json"]) == 0
+
+    [kw] = calls
+    assert kw["status_file"] == Path("run/status.json")
+
+
+# -- kiosk -----------------------------------------------------------------------------------
+
+
+def _no_kiosk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make `from . import kiosk` import afresh: drop the module and the package attribute."""
+    monkeypatch.delitem(sys.modules, "rustyfarian_bench.kiosk", raising=False)
+    monkeypatch.delattr(rustyfarian_bench, "kiosk", raising=False)
+
+
+_Call = tuple[tuple[object, ...], dict[str, object]]
+
+
+def _fake_kiosk(monkeypatch: pytest.MonkeyPatch) -> list[_Call]:
+    _no_kiosk(monkeypatch)
+    calls: list[_Call] = []
+
+    def run(*a: object, **kw: object) -> int:
+        calls.append((a, kw))
+        return 7
+
+    fake = types.ModuleType("rustyfarian_bench.kiosk")
+    fake.run = run  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rustyfarian_bench.kiosk", fake)
+    return calls
+
+
+def test_kiosk_flags_reach_run_and_its_exit_code_is_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _fake_kiosk(monkeypatch)
+    flags = ["--status-file", "s.json", "--title", "T", "--address", "bench.local:8000"]
+    flags += ["--fb-match", "fb9", "--once", "--png-dir", "pngs"]
+
+    assert cli.main(["kiosk", *flags]) == 7
+
+    [((path,), kw)] = calls
+    assert path == Path("s.json")
+    assert (kw["title"], kw["address"], kw["fb_match"]) == ("T", "bench.local:8000", "fb9")
+    assert (kw["once"], kw["png_dir"]) == (True, Path("pngs"))
+    assert kw["version"] == rustyfarian_bench.__version__
+    assert callable(kw["wait"])
+
+
+def test_kiosk_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in ("BENCH_TITLE", "BENCH_ADDRESS", "BENCH_FB_MATCH"):
+        monkeypatch.delenv(var, raising=False)
+    calls = _fake_kiosk(monkeypatch)
+
+    assert cli.main(["kiosk"]) == 7
+
+    [((path,), kw)] = calls
+    assert path == Path("/run/rustyfarian-bench/status.json")
+    assert (kw["once"], kw["png_dir"]) == (False, None)
+
+
+def test_kiosk_restores_the_sigterm_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    import signal
+
+    calls = _fake_kiosk(monkeypatch)
+    before = signal.getsignal(signal.SIGTERM)
+
+    cli.main(["kiosk"])
+
+    assert calls
+    assert signal.getsignal(signal.SIGTERM) is before
+
+
+def test_kiosk_without_pillow_hints_at_the_extra_and_exits_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _no_kiosk(monkeypatch)
+    monkeypatch.setitem(sys.modules, "PIL", None)  # as if the extra were absent
+
+    assert cli.main(["kiosk"]) == 2
+    assert "rustyfarian-bench[kiosk]" in capsys.readouterr().out
+
+
+def test_kiosk_does_not_hide_a_missing_module_of_our_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_kiosk(monkeypatch)
+    monkeypatch.setitem(sys.modules, "rustyfarian_bench.kiosk", None)
+
+    with pytest.raises(ModuleNotFoundError):
+        cli.main(["kiosk"])

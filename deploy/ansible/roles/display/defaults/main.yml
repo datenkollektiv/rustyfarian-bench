@@ -12,3 +12,7 @@ display_title: rustyfarian bench
 # part of the panel's name under /sys/class/graphics/fb*/name (DRM: ili9486drmfb, fbtft: fb_ili9486)
 display_fb_match: ili9486
 display_user: bench-display
+# the bench address the idle screen shows
+display_address: "{{ bench_fqdn }}:{{ bench_port }}"
+# the first release with the `kiosk` command; an older bench_version fails the play
+display_kiosk_since: "0.8.0"
