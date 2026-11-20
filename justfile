@@ -188,7 +188,7 @@ deploy-lint: deploy-collections
         YAMLLINT="{{ yamllint }}" SHELLCHECK="{{ shellcheck }}" CHECK_JSONSCHEMA="{{ check_jsonschema }}" \
         CLOUD_INIT_SCHEMAS="{{ cloud_init_schemas }}" bash "{{ justfile_directory() }}/deploy/lint.sh"
 
-# render the panel banner into tmp/display/ (fake framebuffer plus banner.png), no Pi needed; needs the network for Pillow on the first run
+# render the panel banner and the farewell into tmp/display/ (fake framebuffer plus PNGs), no Pi needed; needs the network for Pillow on the first run
 [group('bench-host')]
 display-smoke:
     #!/usr/bin/env bash
@@ -217,6 +217,20 @@ display-smoke:
     assert any(data), "nothing was drawn"
     print("ok -- the banner's bytes look right; see tmp/display/banner.png (Pillow's fallback font without DejaVu)")
     EOF
+    # the stop path, as at shutdown: the service draws the farewell over the banner on SIGTERM,
+    # which `uv run` forwards to the script
+    cp "$dir/dev/fb1" "$dir/banner.fb"
+    BENCH_SYSFS_GRAPHICS="$dir/sys" BENCH_DEV_DIR="$dir/dev" BENCH_VERSION=v0.0.0-smoke \
+        uv run --no-project --python 3.13 --with "pillow=={{ pillow }}" python "$script" --png "$dir/farewell.png" 2> "$dir/service.log" &
+    pid=$!
+    for _ in $(seq 50); do grep -q 'until stopped' "$dir/service.log" && break; sleep 0.2; done
+    if ! grep -q 'until stopped' "$dir/service.log"; then
+        kill "$pid"; cat "$dir/service.log" >&2; echo "the service never settled on the banner" >&2; exit 1
+    fi
+    kill -TERM "$pid"
+    wait "$pid" || { cat "$dir/service.log" >&2; echo "the service did not stop cleanly" >&2; exit 1; }
+    if cmp -s "$dir/banner.fb" "$dir/dev/fb1"; then echo "no farewell was drawn on stop" >&2; exit 1; fi
+    echo "ok -- a stop draws the farewell; see tmp/display/farewell.png"
 
 # create the bench CA once, straight into shared-secrets/bench.yaml
 [group('bench-host')]

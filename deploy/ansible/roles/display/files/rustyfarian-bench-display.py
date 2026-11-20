@@ -3,7 +3,8 @@
 
 Installed by the `display` role as /usr/local/bin/rustyfarian-bench-display and run by
 rustyfarian-bench-display.service: wait for the panel's framebuffer, draw the title and the
-installed version once, then sleep until the service is stopped. `just display-smoke` renders it
+installed version once, then sleep until the service is stopped, which ends with a farewell on the
+panel (at shutdown, systemd stops the service). `just display-smoke` renders it
 on the controller into tmp/display/ with a fake framebuffer; BENCH_SYSFS_GRAPHICS and
 BENCH_DEV_DIR point it there.
 """
@@ -26,6 +27,7 @@ BACKGROUND = (0, 0, 0)
 TITLE_COLOUR = (255, 255, 255)
 SUBTITLE_COLOUR = (160, 160, 160)
 ACCENT_COLOUR = (230, 110, 30)
+FAREWELL = "good-bye"
 
 log = logging.getLogger("rustyfarian-bench-display")
 
@@ -115,7 +117,7 @@ def main() -> None:
         help="part of the panel's framebuffer name (default: %(default)s)",
     )
     parser.add_argument("--once", action="store_true", help="draw and exit instead of staying up")
-    parser.add_argument("--png", type=Path, help="also save the banner as a PNG")
+    parser.add_argument("--png", type=Path, help="also save each screen drawn as a PNG")
     args = parser.parse_args()
     logging.basicConfig(format="%(message)s", level=logging.INFO)
     sysfs = Path(os.environ.get("BENCH_SYSFS_GRAPHICS", "/sys/class/graphics"))
@@ -140,8 +142,18 @@ def main() -> None:
                 raise
             log.info("%s; retrying in %d s", exc, POLL_SECONDS)
             time.sleep(POLL_SECONDS)
-    if not args.once:
-        signal.pause()
+    if args.once:
+        return
+    # blocked, so a stop is waited for here instead of ending the script before the farewell
+    stop_signals = {signal.SIGTERM, signal.SIGINT}
+    signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
+    log.info("showing the banner until stopped")
+    signal.sigwait(stop_signals)
+    try:
+        draw_banner(fb, dev_dir, FAREWELL, args.title, args.png)
+    except OSError as exc:
+        # the panel going away first must not fail the stop
+        log.warning("no farewell drawn: %s", exc)
 
 
 if __name__ == "__main__":

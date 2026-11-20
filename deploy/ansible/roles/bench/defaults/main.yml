@@ -1,6 +1,6 @@
 ---
 # a release tag: the install is skipped when `uv tool list` already shows it
-bench_version: v0.6.0
+bench_version: v0.7.0
 bench_repo: https://github.com/datenkollektiv/rustyfarian-bench
 bench_home: /srv/bench
 bench_outbox: "{{ bench_home }}/outbox"
