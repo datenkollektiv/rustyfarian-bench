@@ -19,14 +19,18 @@ ExecStart=/usr/local/bin/rustyfarian-bench serve \
     --outbox {{ bench_outbox }} \
     --job-timeout {{ bench_job_timeout }} --detect-timeout {{ bench_detect_timeout }} \
     --token-file {{ bench_etc }}/tokens.toml \
-    --ssl-certfile {{ bench_etc }}/cert.pem --ssl-keyfile {{ bench_etc }}/key.pem
+    --ssl-certfile {{ bench_etc }}/cert.pem --ssl-keyfile {{ bench_etc }}/key.pem \
+    --status-file /run/rustyfarian-bench/status.json
+# the display reads the status file there; systemd removes the directory when serve stops
+RuntimeDirectory=rustyfarian-bench
+RuntimeDirectoryMode=0755
 # SIGTERM to serve only: it ends a running job's process group itself, then systemd kills leftovers
 KillMode=mixed
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
 
-# serve writes only its outbox; boards re-enumerate, so /dev stays visible (no PrivateDevices)
+# serve writes only its outbox and the status file; boards re-enumerate, so /dev stays visible (no PrivateDevices)
 ProtectSystem=strict
 ReadWritePaths={{ bench_home }}
 ProtectHome=yes

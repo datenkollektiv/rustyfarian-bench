@@ -1,9 +1,10 @@
 # {{ ansible_managed }} — deploy/ansible/roles/display/templates/rustyfarian-bench-display.service.j2
 [Unit]
-Description=rustyfarian-bench display banner
+Description=rustyfarian-bench display kiosk
 Documentation=https://github.com/datenkollektiv/rustyfarian-bench/tree/main/deploy
-After=local-fs.target
-# a framebuffer surprise ends the script; stop retrying instead of looping forever
+# time-sync, so the status file's age is judged by a set clock where possible
+After=local-fs.target time-sync.target
+# a framebuffer surprise ends the kiosk; stop retrying instead of looping forever
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -15,7 +16,9 @@ SupplementaryGroups=video
 Environment="BENCH_TITLE={{ display_title | replace('%', '%%') }}"
 Environment=BENCH_VERSION={{ bench_version }}
 Environment=BENCH_FB_MATCH={{ display_fb_match }}
-ExecStart=/usr/local/bin/rustyfarian-bench-display
+Environment="BENCH_ADDRESS={{ display_address | replace('%', '%%') }}"
+# the file serve's unit writes; /run stays readable under ProtectSystem=strict
+ExecStart=/usr/local/bin/rustyfarian-bench kiosk --status-file /run/rustyfarian-bench/status.json
 Restart=on-failure
 RestartSec=5
 

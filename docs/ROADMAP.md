@@ -14,7 +14,7 @@ timeline
         Bench kiosk v2 (feature-doc) : the display shows the running job and the last verdicts, from a status file `serve` writes and a `kiosk` subcommand polls
     section Near term
         Bench maintenance mode : `serve` refuses new jobs while a maintenance marker exists, so `pi-upgrade` and a restart drain the queue instead of racing a submit
-        Outbox retention : `serve` deletes finished jobs after N days, images and logs included, so stored Wi-Fi credentials and serial logs live a window, not forever
+        Outbox retention : `serve` deletes finished jobs after N days, images and logs included, so stored Wi-Fi credentials and serial logs live a window, not forever, while the newest 5 finished jobs stay for the kiosk's verdict history
         Result traceability : results record the consumer git revision, dirty flag and scenario hash
         Prompt placeholders v2 (feature-doc) : board-level variables in `bench.toml` for facts the log never prints, deferred until v1 ran on hardware
         ws2812 S3 bench : S3 pulse and rainbow plus C3 colours, comet and frame sweep in rustyfarian-ws2812, two chips to learn on
