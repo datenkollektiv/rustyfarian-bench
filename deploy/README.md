@@ -56,7 +56,7 @@ So cloud-init does the minimum to make the Pi reachable, and every decision that
 - Raspberry Pi 5 with the official 27 W USB-C supply.
 - A powered USB hub for the boards: the Pi 5 limits USB current without the 5 A supply, and a board that browns out mid-flash looks like a firmware bug.
 - Ethernet preferred; Wi-Fi works through `network-config`.
-- Waveshare 3.5" display: not used by the bench itself, see [What comes next](#what-comes-next).
+- Waveshare 3.5" display (A): shows the bench banner with the installed version, see the `display` role; the job view is [what comes next](#what-comes-next).
 
 ## Layout
 
@@ -86,6 +86,7 @@ deploy/
       base/                     # OS updates, SSH hardening, firewall, USB-serial hygiene
       tools/                    # uv and espflash as pinned, checksummed binaries
       bench/                    # bench user, rustyfarian-bench, secrets, systemd unit
+      display/                  # the Waveshare 3.5": overlay, console release, banner service
 ```
 
 ## Prerequisites on the controller
@@ -334,6 +335,15 @@ Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
 - the read is a snapshot, so a job submitted during the run still meets the upgrade, the tool or the restart;
 - `unattended-upgrades` installs Debian's fixes daily without this guard, accepted since neither `serve` nor espflash comes from apt and a job runs in a fresh child process, so a Python patch release lands under a job at worst.
 
+**`display`** — the Waveshare 3.5" panel, first light for the kiosk:
+
+- `dtoverlay=piscreen,drm,speed=16000000,rotate=180` in a managed block at the end of `/boot/firmware/config.txt`: the stock Raspberry Pi overlay drives this panel through the mainline DRM driver, found with `deploy/display-probe.sh` (`display_drm: false` picks the fbtft driver, also proven, which counts its rotation from 270 and wants 90); the overlay loads at the next reboot, which the run reports and never does;
+- a udev rule that releases the kernel console from the panel: headless, the panel is framebuffer 0, so fbcon would show the login prompt on it and blank it after ten minutes (`echo 1 > /sys/class/vtconsole/vtconN/bind` gives the console back);
+- a system user `bench-display`, whose hardened unit `rustyfarian-bench-display.service` gets the `video` group and the framebuffer device and nothing else, no network included;
+- `/usr/local/bin/rustyfarian-bench-display`, a Pillow script: it waits for the panel's framebuffer, draws "rustyfarian bench" and `bench_version`, and sleeps until stopped; a bench upgrade changes the unit and restarts it with the new number.
+
+`just display-smoke` renders the banner on the controller into `tmp/display/banner.png` and a fake framebuffer, with the Pi's Pillow version and its fallback font where DejaVu is absent, so a layout change is seen before it reaches the Pi.
+
 ## Step 4 — Check it
 
 ```bash
@@ -349,6 +359,8 @@ just pi-check             # the first token in bench.yaml; `just pi-check laptop
 
 The token reaches `curl` through a pipe, never through its arguments.
 `detect` probes every port, so run `pi-check` while no job runs.
+
+After the first reboot the panel shows the banner with `bench_version`; if it stays white, `journalctl -u rustyfarian-bench-display` on the Pi says whether the framebuffer was found.
 
 Then the real test, a consumer's check run on the Pi:
 
@@ -387,6 +399,7 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Rebuild the Pi          | Steps 1–4 again; the CA and tokens survive in `shared-secrets/`      |
 | Read the logs           | `journalctl -u rustyfarian-bench -f`, jobs in `/srv/bench/outbox/`   |
 | Clear old jobs          | by hand: images may hold Wi-Fi credentials and the outbox is kept forever |
+| Panel white or stale    | `journalctl -u rustyfarian-bench-display`; `display-probe.sh` loads the overlay live |
 
 `pi-upgrade`, a tool bump and a restart are refused while a job is unfinished; see the `bench` role above.
 Change the Wi-Fi over Ethernet: the link changes mid-run.
@@ -405,8 +418,10 @@ Change the Wi-Fi over Ethernet: the link changes mid-run.
 | Pinned, checksummed release binaries             | `cargo install`, `curl \| sh`       | reproducible, fast, reviewed on bump                           |
 | `ansible-core` through `uvx`                     | a global Ansible install            | the version is pinned by the repo, not by the laptop           |
 | `rustyfarian-bench` from a release tag           | a commit SHA, a copied wheel        | the Pi runs released code; upgrading is one variable           |
+| stock `piscreen` overlay, DRM variant            | the fbtft variant, Waveshare's dtbo | both drive the panel; DRM is mainline and a KMS device for a later compositor |
 
 ## What comes next
 
-The Waveshare 3.5" display becomes a kiosk showing the bench's queue: the running job, its board and its live log tail, and the last verdicts.
-That needs a read-only job list in `serve`, which it does not have yet, and a `kiosk` role: a minimal Wayland compositor with Chromium in kiosk mode, replacing the LXDE autostart of the earlier, hand-built kiosk.
+The panel becomes a kiosk showing the bench's queue: the running job, its board and its live log tail, and the last verdicts.
+That needs a read-only job list in `serve`, which it does not have yet; the banner script of the `display` role then polls it and redraws, instead of a browser.
+A Wayland compositor on the panel stays possible, since the DRM variant makes it a KMS device; `fbcon=map:` and Chromium were weighed and left aside, see `docs/features/bench-kiosk-v1.md`.

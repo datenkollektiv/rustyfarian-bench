@@ -6,11 +6,10 @@ set -euo pipefail
 # Nothing on the panel is readable over software: the controller sits behind a write-only shift
 # register. So this loads a display overlay at runtime (config.txt untouched), paints four colour
 # bars with a black square in the framebuffer's top-left corner, asks what the panel shows, and
-# unloads the overlay again. Default candidates: the stock `piscreen` overlay, fbtft variant first,
-# then its `drm` variant. Name other overlays to try them in order, e.g. waveshare35b once its
-# .dtbo sits in /boot/firmware/overlays/. (A), (B) and (C) are Waveshare's model letters, printed
-# on the board. A `drm` candidate can stay white although it drives the panel: a raw write into a
-# DRM framebuffer runs no modeset, and the modeset is what initialises the panel (bench Pi, 2026-11-20).
+# unloads the overlay again. Default candidates: the stock `piscreen` overlay, `drm` variant first,
+# then fbtft; both drove the bench Pi's panel on 2026-11-20. Name other overlays to try them in
+# order, e.g. waveshare35b once its .dtbo sits in /boot/firmware/overlays/. (A), (B) and (C) are
+# Waveshare's model letters, printed on the board. Answer with one letter: a sentence is "other".
 #   --hold N   do not ask; keep each pattern N seconds (without a terminal the default is 20)
 #   --keep     leave the first overlay that loads in place, until the next reboot
 #   --force    run although serve has unfinished jobs
@@ -34,7 +33,7 @@ while [ $# -gt 0 ]; do
         *) specs+=("$1"); shift ;;
     esac
 done
-[ ${#specs[@]} -gt 0 ] || specs=("piscreen,speed=16000000" "piscreen,drm,speed=16000000")
+[ ${#specs[@]} -gt 0 ] || specs=("piscreen,drm,speed=16000000" "piscreen,speed=16000000")
 
 sysfs=${SYSFS_GRAPHICS:-/sys/class/graphics}
 devdir=${DEV_DIR:-/dev}
@@ -221,10 +220,12 @@ for spec in "${specs[@]}"; do
         fb_describe "$new"
         if paint "$new"; then
             answer=$(ask)
+            # one letter only: "white, blue, green, red ..." once passed as "still white"
             letter=${answer,,}
-            case "${letter:0:1}" in
+            [ ${#letter} -eq 1 ] || letter="?"
+            case "$letter" in
                 b) verdict="bars as expected: an ILI9486 on the (A) wiring; '$spec' is the overlay for the role" ;;
-                r) verdict="bars reversed: an ILI9486 on the (A) wiring, upside down; '$spec' plus rotate=180" ;;
+                r) verdict="bars reversed: an ILI9486 on the (A) wiring, upside down; turn rotate by 180 from this driver's default (drm: 0, so 180; fbtft: 270, so 90)" ;;
                 i) verdict="inverted colours: ILI9486 with another init, most likely the (B); try waveshare35b" ;;
                 s) verdict="red and blue swapped: driven by '$spec'; the role needs the bgr setting" ;;
                 w) verdict="still white: not driven by '$spec'" ;;
@@ -258,7 +259,7 @@ cat <<'EOF'
 
 Reading it:
   bars as expected   -> the (A), or a compatible panel: the role uses the stock piscreen overlay
-  bars reversed      -> the same panel mounted the other way round: add rotate=180
+  bars reversed      -> the same panel mounted the other way round: rotate=180 on the drm variant, rotate=90 on fbtft
   inverted colours   -> the (B): copy Waveshare's waveshare35b.dtbo to /boot/firmware/overlays/, rerun with it
   white on all       -> the (C), or not an ILI9486: likewise with waveshare35c
   the black square   -> marks the framebuffer's top-left corner, so it tells the rotation the role needs

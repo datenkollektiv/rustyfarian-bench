@@ -1,0 +1,14 @@
+---
+# the stock Raspberry Pi overlay for the Waveshare 3.5" (A); deploy/display-probe.sh drove the panel with both variants
+display_overlay: piscreen
+# true: the mainline DRM driver written for this panel; false: the staging fbtft driver
+display_drm: true
+display_spi_hz: 16000000
+# Both drivers showed the panel upside down at their defaults, and they count differently: the DRM
+# driver starts at 0 and is landscape at 0 and 180; fbtft starts at the overlay's 270 and is
+# landscape at 90 and 270. Each value below is that driver's default turned by 180.
+display_rotate: "{{ 180 if display_drm else 90 }}"
+display_title: rustyfarian bench
+# part of the panel's name under /sys/class/graphics/fb*/name (DRM: ili9486drmfb, fbtft: fb_ili9486)
+display_fb_match: ili9486
+display_user: bench-display
