@@ -340,7 +340,7 @@ Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
 - `dtoverlay=piscreen,drm,speed=16000000,rotate=180` in a managed block at the end of `/boot/firmware/config.txt`: the stock Raspberry Pi overlay drives this panel through the mainline DRM driver, found with `deploy/display-probe.sh` (`display_drm: false` picks the fbtft driver, also proven, which counts its rotation from 270 and wants 90); the overlay loads at the next reboot, which the run reports and never does;
 - a udev rule that releases the kernel console from the panel: headless, the panel is framebuffer 0, so fbcon would show the login prompt on it and blank it after ten minutes (`echo 1 > /sys/class/vtconsole/vtconN/bind` gives the console back);
 - a system user `bench-display`, whose hardened unit `rustyfarian-bench-display.service` gets the `video` group and the framebuffer device and nothing else, no network included;
-- `/usr/local/bin/rustyfarian-bench-display`, a Pillow script: it waits for the panel's framebuffer, draws "rustyfarian bench" and `bench_version`, and sleeps until stopped; a bench upgrade changes the unit and restarts it with the new number.
+- `/usr/local/bin/rustyfarian-bench-display`, a Pillow script: it waits for the panel's framebuffer, draws "rustyfarian bench" and `bench_version`, and sleeps until stopped, when it draws "good-bye" (so the panel says so at shutdown); a bench upgrade changes the unit and restarts it with the new number.
 
 `just display-smoke` renders the banner on the controller into `tmp/display/banner.png` and a fake framebuffer, with the Pi's Pillow version and its fallback font where DejaVu is absent, so a layout change is seen before it reaches the Pi.
 
