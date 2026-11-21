@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # display-smoke.sh — render each kiosk screen (idle, running, queued, long names, stale, stopped,
-# maintenance) and the farewell into tmp/display/ from fixture status files, with a fake framebuffer
-# plus PNGs, so a layout change is seen before it reaches the Pi. Run through `just display-smoke`;
+# maintenance), the farewell, and the black frame of an idle panel and its wake on a tap into tmp/display/
+# from fixture status files, with a fake framebuffer and touch node plus PNGs, so a layout change is seen
+# before it reaches the Pi. Run through `just display-smoke`;
 # needs the network for Pillow until it is cached.
 # Usage: deploy/display-smoke.sh (no arguments)
 
@@ -125,3 +126,50 @@ trap - EXIT
 mv "$dir/png/kiosk-farewell.png" "$dir/farewell.png"
 if cmp -s "$dir/before-stop.fb" "$dir/dev/fb1"; then echo "no farewell was drawn on stop" >&2; exit 1; fi
 echo "ok -- a stop draws the farewell; see tmp/display/farewell.png"
+# the sleep path: with a touch panel the kiosk goes dark after --sleep-after idle seconds, and a tap
+# brings the idle screen back; the event node is a regular file the phase appends one tap to
+mkdir -p "$dir/sys-input/event0/device" "$dir/dev/input"
+printf 'ADS7846 Touchscreen\n' > "$dir/sys-input/event0/device/name"
+: > "$dir/dev/input/event0"
+export BENCH_SYSFS_INPUT="$dir/sys-input"
+"$python" - "$dir/status/idle.json" <<'EOF'
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data["updated"] = datetime.now(UTC).isoformat(timespec="seconds")
+path.write_text(json.dumps(data) + "\n")
+EOF
+# lines: wait up to 10 s until the sleep log holds $2 lines matching $1
+lines() {
+    for _ in $(seq 100); do [ "$(grep -c "$1" "$dir/sleep.log")" -ge "$2" ] && return 0; sleep 0.1; done
+    kill "$pid" 2>/dev/null || true; cat "$dir/sleep.log" >&2; echo "the kiosk never logged $2 x '$1'" >&2; exit 1
+}
+zero() { "$python" -c 'import sys; sys.exit(any(open(sys.argv[1], "rb").read()))' "$1"; }
+"$bench" kiosk --sleep-after 3 --status-file "$dir/status/idle.json" --png-dir "$dir/png" 2> "$dir/sleep.log" &
+pid=$!
+trap 'kill "$pid" 2>/dev/null || true' EXIT
+lines 'drawn on fb1: asleep$' 1
+cp "$dir/dev/fb1" "$dir/asleep.fb"
+zero "$dir/asleep.fb" || { echo "the asleep frame is not black" >&2; exit 1; }
+mv "$dir/png/kiosk-dark.png" "$dir/asleep.png"
+# one tap as the ADS7846 sends it: BTN_TOUCH down, then the report's end
+"$python" - "$dir/dev/input/event0" <<'EOF'
+import struct
+import sys
+event = struct.Struct("@llHHi")  # struct input_event on a 64-bit host, as kiosk_touch reads it
+with open(sys.argv[1], "ab") as node:
+    node.write(event.pack(0, 0, 0x01, 0x14A, 1) + event.pack(0, 0, 0x00, 0, 0))
+EOF
+lines 'drawn on fb1: idle$' 2
+# copied at once: three seconds later the idle panel goes dark again
+cp "$dir/dev/fb1" "$dir/woken.fb"
+if zero "$dir/woken.fb"; then echo "a tap did not bring the idle screen back" >&2; exit 1; fi
+lines 'drawn on fb1: asleep$' 2
+kill -TERM "$pid"
+wait "$pid" || { cat "$dir/sleep.log" >&2; echo "the kiosk did not stop cleanly" >&2; exit 1; }
+trap - EXIT
+if zero "$dir/dev/fb1"; then echo "no farewell was drawn over the dark panel" >&2; exit 1; fi
+echo "ok -- the panel sleeps, a tap wakes it, a stop draws the farewell; see tmp/display/asleep.png"

@@ -12,13 +12,17 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
+from typing import Protocol
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from . import kiosk_layout as kl
+from .kiosk_sleep import Idle, activity_key, asleep, busy, track
 from .status import Status, parse_status
 
 FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
@@ -30,6 +34,27 @@ log = logging.getLogger("rustyfarian-bench-kiosk")
 Render = Callable[[tuple[kl.Primitive, ...], int, int], Image.Image]
 
 
+class Touch(Protocol):
+    """What the loop needs of `kiosk_touch.TouchReader`."""
+
+    @property
+    def present(self) -> bool: ...
+
+    def touched(self) -> bool: ...
+
+    def close(self) -> None: ...
+
+
+class Screen(Protocol):
+    """Where the loop draws; `dark` and `wake` are the hooks a backlight switch plugs into."""
+
+    def show(self, prims: tuple[kl.Primitive, ...], png_name: str) -> None: ...
+
+    def dark(self) -> None: ...
+
+    def wake(self) -> None: ...
+
+
 class UnsupportedFramebuffer(Exception):
     """The panel is not 16 bits per pixel; nothing else is drawn."""
 
@@ -37,7 +62,11 @@ class UnsupportedFramebuffer(Exception):
 def find_framebuffer(sysfs: Path, match: str) -> Path | None:
     """The first framebuffer under sysfs whose driver name contains `match`."""
     for fb in sorted(sysfs.glob("fb[0-9]*")):
-        if match in fb.joinpath("name").read_text():
+        try:
+            name = fb.joinpath("name").read_text()
+        except OSError:
+            continue  # gone since the glob (an overlay unloaded); the caller polls again
+        if match in name:
             return fb
     return None
 
@@ -129,6 +158,33 @@ def write_frame(device: Path, data: bytes) -> None:
         dev.write(data)
 
 
+class FramebufferScreen:
+    """The panel's framebuffer: frames are RGB565 written to its device node."""
+
+    def __init__(self, fb: Path, dev_dir: Path, png_dir: Path | None, render: Render) -> None:
+        self._fb = fb
+        self._dev_dir = dev_dir
+        self._png_dir = png_dir
+        self._render = render
+
+    def show(self, prims: tuple[kl.Primitive, ...], png_name: str) -> None:
+        width, height, bpp, stride = geometry(self._fb)
+        if bpp != 16:
+            raise UnsupportedFramebuffer(f"{self._fb.name} has {bpp} bits per pixel, expected 16")
+        image = self._render(prims, width, height)
+        if self._png_dir is not None:
+            self._png_dir.mkdir(parents=True, exist_ok=True)
+            image.save(self._png_dir / png_name)
+        write_frame(self._dev_dir / self._fb.name, to_rgb565(image, stride))
+
+    def dark(self) -> None:
+        """A black frame; the backlight stays on (see the backlight feature doc)."""
+        self.show(kl.dark(), "kiosk-dark.png")
+
+    def wake(self) -> None:
+        """Nothing to switch on yet; the loop redraws the layout."""
+
+
 def _read_status(path: Path) -> Status | None:
     """The record, or None when the file is missing, unreadable or garbage."""
     try:
@@ -156,64 +212,103 @@ def run(
     now: Callable[[], datetime] = _now,
     wait: Callable[[float], bool] | None = None,
     render: Render = paint,
+    sleep_after: float = 0,
+    touch: Touch | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> int:
     """Draw the status until `wait` returns True, then the farewell; the exit code.
 
     `version` is shown when the record has none (no readable file). `wait(seconds)` is the
     loop's sleep and its stop: it returns True once the kiosk must stop. With `once` the screen
-    is drawn one time and the farewell is not.
+    is drawn one time and the farewell is not, and the panel never sleeps.
+
+    After `sleep_after` idle seconds (see `kiosk_sleep`; 0 turns sleep off) the panel shows a
+    black frame until `touch` reports a tap or the status changes. Without an open touch device
+    it stays on. The farewell is drawn even when dark.
     """
     wait = wait or threading.Event().wait
     fb = find_framebuffer(sysfs, fb_match)
     if fb is None and once:
         log.error("no framebuffer named *%s* under %s", fb_match, sysfs)
+        if touch is not None:
+            touch.close()
         return 1
     if fb is None:
         log.info("waiting for the panel framebuffer (*%s*)", fb_match)
     while fb is None:
         if wait(FB_POLL_SECONDS):
+            if touch is not None:
+                touch.close()
             return 0
         fb = find_framebuffer(sysfs, fb_match)
 
-    def draw(prims: tuple[kl.Primitive, ...], png_name: str) -> None:
-        width, height, bpp, stride = geometry(fb)
-        if bpp != 16:
-            raise UnsupportedFramebuffer(f"{fb.name} has {bpp} bits per pixel, expected 16")
-        image = render(prims, width, height)
-        if png_dir is not None:
-            png_dir.mkdir(parents=True, exist_ok=True)
-            image.save(png_dir / png_name)
-        write_frame(dev_dir / fb.name, to_rgb565(image, stride))
-
+    screen: Screen = FramebufferScreen(fb, dev_dir, png_dir, render)
+    sleeping = sleep_after > 0 and touch is not None and not once
     last: tuple[kl.Primitive, ...] | None = None
     failing = False
-    while True:
-        status = _read_status(status_path)
-        shown = status.version if status else version
-        prims = kl.layout(status, now(), title=title, address=address, version=shown)
-        if prims != last:
-            try:
-                draw(prims, "kiosk.png")
-            except UnsupportedFramebuffer as exc:
-                log.error("%s", exc)
-                return 1
-            except (OSError, ValueError) as exc:
-                # the node is not there yet, or udev has not handed it to group video yet
-                if not failing:
-                    log.warning("cannot draw on %s: %s; retrying", fb.name, exc)
-                failing = True
-                if once:
-                    return 1
-            else:
-                failing = False
-                last = prims
-                log.info("drawn on %s: %s", fb.name, kl.classify(status, now()).value)
-        if once:
-            return 0
-        if wait(poll):
-            break
+    shown_dark = False
+    idle: Idle | None = None
+
+    def attempt(action: Callable[[], None], what: str) -> bool:
+        """Run a screen action; False and one warning while the node is not usable yet."""
+        nonlocal failing
+        try:
+            action()
+        except (OSError, ValueError) as exc:
+            # the node is not there yet, or udev has not handed it to group video yet
+            if not failing:
+                log.warning("cannot draw on %s: %s; retrying", fb.name, exc)
+            failing = True
+            return False
+        failing = False
+        log.info("drawn on %s: %s", fb.name, what)
+        return True
+
     try:
-        draw(kl.farewell(title), "kiosk-farewell.png")
+        while True:
+            status = _read_status(status_path)
+            stamp = now()
+            touched = touch.touched() if sleeping and touch is not None else False
+            want_dark = False
+            if sleeping and touch is not None:
+                mono = monotonic()
+                # without an open touch device nothing could wake the panel: it stays on, and
+                # the clock restarts once the device is back so the panel does not go dark at once
+                idle = track(idle, activity_key(status, stamp), mono, touched or not touch.present)
+                want_dark = touch.present and asleep(idle, busy(status, stamp), mono, sleep_after)
+            if want_dark != shown_dark:
+                if want_dark:
+                    changed = attempt(screen.dark, "asleep")
+                else:
+                    changed = attempt(screen.wake, "awake")
+                if changed:
+                    shown_dark = want_dark
+                    last = None  # the black frame is on the panel: redraw on wake
+                elif once:
+                    return 1
+            if not (shown_dark or want_dark):
+                shown = status.version if status else version
+                prims = kl.layout(status, stamp, title=title, address=address, version=shown)
+                if prims != last:
+                    if attempt(
+                        partial(screen.show, prims, "kiosk.png"),
+                        kl.classify(status, stamp).value,
+                    ):
+                        last = prims
+                    elif once:
+                        return 1
+            if once:
+                return 0
+            if wait(poll):
+                break
+    except UnsupportedFramebuffer as exc:
+        log.error("%s", exc)
+        return 1
+    finally:
+        if touch is not None:
+            touch.close()
+    try:
+        screen.show(kl.farewell(title), "kiosk-farewell.png")
     except (OSError, ValueError, UnsupportedFramebuffer) as exc:
         # the panel going away first must not fail the stop
         log.warning("no farewell drawn: %s", exc)

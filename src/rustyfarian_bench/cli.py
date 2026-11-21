@@ -24,6 +24,16 @@ def _positive_seconds(text: str) -> float:
     return seconds
 
 
+def _whole_seconds(text: str) -> int:
+    try:
+        seconds = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if seconds < 0:
+        raise argparse.ArgumentTypeError(f"must not be negative: {text!r}")
+    return seconds
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     cfg = config.load(args.repo)
     target = f"{args.target}/{args.check}" if args.check else args.target
@@ -108,6 +118,17 @@ def _cmd_kiosk(args: argparse.Namespace) -> int:
         ui.warn("kiosk needs Pillow: install `rustyfarian-bench[kiosk]`")
         return 2
     logging.basicConfig(format="%(message)s", level=logging.INFO)
+    dev_dir = Path(os.environ.get("BENCH_DEV_DIR", "/dev"))
+    touch = None
+    if args.sleep_after > 0 and not args.once:
+        # stdlib only, but nothing else needs it: sleep off (or `--once`) builds no reader
+        from .kiosk_touch import TouchReader
+
+        touch = TouchReader(
+            Path(os.environ.get("BENCH_SYSFS_INPUT", "/sys/class/input")),
+            dev_dir,
+            os.environ.get("BENCH_TOUCH_MATCH", "ADS7846"),
+        )
     stop = threading.Event()
     previous = signal.signal(signal.SIGTERM, lambda *_: stop.set())
     try:
@@ -118,10 +139,12 @@ def _cmd_kiosk(args: argparse.Namespace) -> int:
             version=__version__,
             fb_match=args.fb_match,
             sysfs=Path(os.environ.get("BENCH_SYSFS_GRAPHICS", "/sys/class/graphics")),
-            dev_dir=Path(os.environ.get("BENCH_DEV_DIR", "/dev")),
+            dev_dir=dev_dir,
             png_dir=args.png_dir,
             once=args.once,
             wait=stop.wait,
+            sleep_after=args.sleep_after,
+            touch=touch,
         )
     finally:
         signal.signal(signal.SIGTERM, previous)
@@ -237,6 +260,14 @@ def main(argv: list[str] | None = None) -> int:
         "--fb-match",
         default=os.environ.get("BENCH_FB_MATCH", "ili9486"),
         help="part of the panel's framebuffer name (default: $BENCH_FB_MATCH or %(default)s)",
+    )
+    kiosk.add_argument(
+        "--sleep-after",
+        type=_whole_seconds,
+        default=os.environ.get("BENCH_SLEEP_AFTER", "900"),
+        metavar="SECONDS",
+        help="go dark after this many idle seconds, a touch wakes the panel; 0 turns sleep off"
+        " (default: $BENCH_SLEEP_AFTER or %(default)s)",
     )
     kiosk.add_argument("--once", action="store_true", help="draw once and exit")
     kiosk.add_argument("--png-dir", type=Path, help="also save each screen drawn there as a PNG")

@@ -146,3 +146,9 @@ Fix: the display role's udev rule writes `0` to the fbcon `vtconsole` `bind` the
 **A probe that keeps only the first letter of a free-text answer invents results: "white, blue, green, red" became "still white" (2026-11-20).**
 The wrong "DRM stays white" verdict reached the feature doc and this file before the saved `tee` log was read again.
 Fix: `deploy/display-probe.sh` accepts single letters only; keep the log and read it before recording a verdict.
+
+**On Raspberry Pi OS a plain `GROUP=` in an `/etc/udev/rules.d/9x-` rule does not stick on an input node: `99-com.rules` sorts later and sets `GROUP="input", MODE="0660"`.**
+udev reads all rules directories in one lexical order, so `99-com.rules` in `/usr/lib/udev/rules.d` overrides a `91-` rule in `/etc`.
+Fix: the display role's touch rule uses `GROUP:=` and `MODE:=`; on the Pi (2026-11-21) the node reads `640 root:bench-display`.
+`DeviceAllow=char-input r` admits every input device, so this udev mode is the only thing that narrows the kiosk's reads to the touch node.
+The ADS7846 is `event5` at boot, after four HDMI nodes and `pwr_button`, so the kiosk finds it by name; `deploy/touch-probe.sh` shows both.

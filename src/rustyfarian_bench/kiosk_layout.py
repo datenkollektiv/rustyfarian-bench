@@ -233,3 +233,8 @@ def layout(
 def farewell(title: str) -> tuple[Primitive, ...]:
     """The screen drawn when the kiosk stops: the v1 good-bye, with the title below."""
     return _banner(FAREWELL, title)
+
+
+def dark() -> tuple[Primitive, ...]:
+    """The screen drawn while the panel sleeps: one full-panel black background."""
+    return (_background(),)

@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `serve --status-file PATH` keeps a world-readable JSON status file (schema 1) for the kiosk panel: state, queue length, the running job's board, example, start and step, and the last 5 verdicts, rewritten on every job change and every 10 s; it never holds a job id, a submitter or log text, and it is off by default.
 - `just pi-provision-dev` tests unreleased code on the bench host: it builds a wheel of the checkout under its `.devN` version, and the `bench` role copies and installs it instead of a release tag (`bench_wheel`).
 - `rustyfarian-bench kiosk` (needs the new `rustyfarian-bench[kiosk]` extra, Pillow) draws that status file on the SPI panel's framebuffer once a second, writes a frame only when the screen changes and says "good-bye" on SIGTERM; `--once` and `--png-dir` render it without a panel.
+- `kiosk --sleep-after SECONDS` (default `$BENCH_SLEEP_AFTER` or 900, 0 turns it off) draws the panel black after that long without a queued or running job or a status change; a tap on the touch panel, a new job, or `serve` going stale or stopping wakes it, and without a readable touch device it never goes dark.
+- The `display` role hands the touch panel's event node to the kiosk's group with a udev rule (`display_touch_name`), lets the unit read input devices and passes `display_sleep_after` (default 900) as `--sleep-after`.
+- `deploy/touch-probe.sh` shows, read-only and with the kiosk running, whether the bench Pi's touch panel is found, who may read it and which events a tap sends.
 
 ### Changed
 
@@ -20,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The bench host's panel shows the queue instead of the static banner: the running job with its board, example, elapsed time and step bar, the idle screen with version and address, and the last 5 verdicts; a stale heartbeat or a stopped `serve` shows as such.
 - The `display` role runs `rustyfarian-bench kiosk` from the bench's install, which now includes the `kiosk` extra; the serve unit gets `RuntimeDirectory=rustyfarian-bench` for the status file; the role refuses a `bench_version` below v0.8.0.
 - `just display-smoke` installs the package with the `kiosk` extra and renders status fixtures (idle, running, queued, long names, stale, stopped, maintenance) instead of the banner script.
+- `just display-smoke` also checks that the panel goes black, that a tap on a fake touch node wakes it, and that a stop draws the farewell over the dark panel.
 
 ### Removed
 
