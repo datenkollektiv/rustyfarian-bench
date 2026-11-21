@@ -39,11 +39,18 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 
 ## Coding Principles
 
-- **State assumptions** before starting. If a task has multiple valid interpretations, present them rather than picking silently.
-- **Simplicity first.** Minimum code that solves the problem. No features beyond what was asked. No abstractions for single-use code. No error handling for impossible scenarios.
-- **Surgical changes.** Touch only what the task requires. Do not improve adjacent code, comments, or formatting. Every changed line should trace directly to the user's request.
-- When your changes create orphans (unused imports, variables, functions), remove them. Do not remove pre-existing dead code unless asked.
-- **Recorded knowledge is load-bearing — verify before acting on it.** README notes, comments, and any project lore/knowledge file capture point-in-time facts that quietly drift. Treat a recorded claim — especially one that steers automated behaviour — as a hypothesis to confirm against the current code, not as ground truth.
+- **State assumptions** before starting; when a task has several valid readings, present them rather than picking silently.
+- **Simplicity first:** the minimum code that solves the problem.
+  - No features beyond what was asked.
+  - No abstractions for single-use code.
+  - No error handling for impossible scenarios.
+- **Surgical changes:** touch only what the task requires, so every changed line traces to the request.
+  - Do not improve adjacent code, comments or formatting.
+  - Remove the orphans your change creates (unused imports, variables, functions).
+  - Do not remove pre-existing dead code unless asked.
+- **Recorded knowledge is load-bearing:** verify it before acting on it.
+  - README notes, comments and lore files capture point-in-time facts that quietly drift.
+  - Treat a recorded claim, especially one that steers automated behaviour, as a hypothesis to confirm against the current code.
 
 ## Important Files
 
