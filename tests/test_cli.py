@@ -389,6 +389,7 @@ def test_kiosk_flags_reach_run_and_its_exit_code_is_returned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _fake_kiosk(monkeypatch)
+    _fake_touch_reader(monkeypatch)
     flags = ["--status-file", "s.json", "--title", "T", "--address", "bench.local:8000"]
     flags += ["--fb-match", "fb9", "--once", "--png-dir", "pngs"]
 
@@ -403,21 +404,125 @@ def test_kiosk_flags_reach_run_and_its_exit_code_is_returned(
 
 
 def test_kiosk_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("BENCH_TITLE", "BENCH_ADDRESS", "BENCH_FB_MATCH"):
+    for var in KIOSK_ENV:
         monkeypatch.delenv(var, raising=False)
     calls = _fake_kiosk(monkeypatch)
+    readers = _fake_touch_reader(monkeypatch)
 
     assert cli.main(["kiosk"]) == 7
 
     [((path,), kw)] = calls
     assert path == Path("/run/rustyfarian-bench/status.json")
     assert (kw["once"], kw["png_dir"]) == (False, None)
+    assert kw["sleep_after"] == 900
+    assert kw["touch"] is readers[0]
+    assert readers[0].args == (Path("/sys/class/input"), Path("/dev"), "ADS7846")
+
+
+KIOSK_ENV = (
+    "BENCH_TITLE",
+    "BENCH_ADDRESS",
+    "BENCH_FB_MATCH",
+    "BENCH_SLEEP_AFTER",
+    "BENCH_TOUCH_MATCH",
+    "BENCH_SYSFS_INPUT",
+    "BENCH_DEV_DIR",
+)
+
+
+class _FakeReader:
+    def __init__(self, *args: object) -> None:
+        self.args = args
+
+
+def _fake_touch_reader(monkeypatch: pytest.MonkeyPatch) -> list[_FakeReader]:
+    """Replace `TouchReader` so no test reads the machine's own /sys/class/input."""
+    from rustyfarian_bench import kiosk_touch
+
+    readers: list[_FakeReader] = []
+
+    def build(*args: object) -> _FakeReader:
+        readers.append(_FakeReader(*args))
+        return readers[-1]
+
+    monkeypatch.setattr(kiosk_touch, "TouchReader", build)
+    return readers
+
+
+def test_kiosk_sleep_after_reaches_run_with_a_touch_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BENCH_SLEEP_AFTER", raising=False)
+    calls = _fake_kiosk(monkeypatch)
+    readers = _fake_touch_reader(monkeypatch)
+
+    assert cli.main(["kiosk", "--sleep-after", "30"]) == 7
+
+    [(_, kw)] = calls
+    assert kw["sleep_after"] == 30
+    assert len(readers) == 1
+    assert kw["touch"] is readers[0]
+
+
+def test_kiosk_sleep_after_zero_is_accepted_and_builds_no_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _fake_kiosk(monkeypatch)
+    readers = _fake_touch_reader(monkeypatch)
+
+    assert cli.main(["kiosk", "--sleep-after", "0"]) == 7
+
+    [(_, kw)] = calls
+    assert kw["sleep_after"] == 0
+    assert kw["touch"] is None
+    assert readers == []
+
+
+@pytest.mark.parametrize("value", ["-1", "abc", "1.5", ""])
+def test_kiosk_sleep_after_rejects_bad_values_with_exit_2(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    calls = _fake_kiosk(monkeypatch)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["kiosk", "--sleep-after", value])
+
+    assert exit_info.value.code == 2
+    assert calls == []
+
+
+def test_kiosk_environment_sets_the_sleep_and_touch_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BENCH_SLEEP_AFTER", "120")
+    monkeypatch.setenv("BENCH_TOUCH_MATCH", "Goodix")
+    monkeypatch.setenv("BENCH_SYSFS_INPUT", str(tmp_path / "input"))
+    monkeypatch.setenv("BENCH_DEV_DIR", str(tmp_path / "dev"))
+    calls = _fake_kiosk(monkeypatch)
+    readers = _fake_touch_reader(monkeypatch)
+
+    assert cli.main(["kiosk"]) == 7
+
+    [(_, kw)] = calls
+    assert kw["sleep_after"] == 120
+    assert readers[0].args == (tmp_path / "input", tmp_path / "dev", "Goodix")
+
+
+def test_kiosk_flag_beats_the_sleep_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BENCH_SLEEP_AFTER", "120")
+    calls = _fake_kiosk(monkeypatch)
+    _fake_touch_reader(monkeypatch)
+
+    assert cli.main(["kiosk", "--sleep-after", "0"]) == 7
+
+    assert calls[0][1]["sleep_after"] == 0
 
 
 def test_kiosk_restores_the_sigterm_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     import signal
 
     calls = _fake_kiosk(monkeypatch)
+    _fake_touch_reader(monkeypatch)
     before = signal.getsignal(signal.SIGTERM)
 
     cli.main(["kiosk"])
@@ -444,3 +549,15 @@ def test_kiosk_does_not_hide_a_missing_module_of_our_own(
 
     with pytest.raises(ModuleNotFoundError):
         cli.main(["kiosk"])
+
+
+def test_kiosk_once_builds_no_touch_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BENCH_SLEEP_AFTER", raising=False)
+    calls = _fake_kiosk(monkeypatch)
+    readers = _fake_touch_reader(monkeypatch)
+
+    assert cli.main(["kiosk", "--once"]) == 7
+
+    [(_, kw)] = calls
+    assert kw["touch"] is None
+    assert readers == []

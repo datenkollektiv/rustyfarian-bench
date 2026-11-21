@@ -9,6 +9,13 @@
       v{{ display_kiosk_since }} or later, not {{ bench_version }}
     quiet: true
 
+# `| int` would turn a typo into 0, which switches the panel's sleep off without a word
+- name: Check that display_sleep_after is whole seconds
+  ansible.builtin.assert:
+    that: (display_sleep_after | string) is match('^[0-9]+$')
+    fail_msg: display_sleep_after is seconds as a whole number, 0 or more, not {{ display_sleep_after }}
+    quiet: true
+
 # Pillow comes with the bench's `[kiosk]` extra
 - name: Install the kiosk's font
   ansible.builtin.apt:
@@ -24,7 +31,7 @@
     name: "{{ display_user }}"
     system: true
 
-# the unit grants `video` for /dev/fb*; the user itself owns nothing
+# the unit grants `video` for /dev/fb*; the group gets the touch panel's event node (udev rule below)
 - name: Create the display user
   ansible.builtin.user:
     name: "{{ display_user }}"
@@ -74,6 +81,17 @@
     group: root
     mode: "0644"
   notify: Reload udev
+
+# The kiosk reads the touch panel to wake from its idle sleep; the restart lets it reopen the node
+# under the new owner instead of waiting for its next scan.
+- name: Give the touch panel to the display group
+  ansible.builtin.template:
+    src: 91-rustyfarian-bench-touch.rules.j2
+    dest: /etc/udev/rules.d/91-rustyfarian-bench-touch.rules
+    owner: root
+    group: root
+    mode: "0644"
+  notify: [Reload udev, Restart the display]
 
 # a `--check` run writes no unit, and systemd cannot start or restart one it has never seen
 - name: Look for the display unit

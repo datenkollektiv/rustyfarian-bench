@@ -2,8 +2,9 @@
 
 The snapshot is the surface as of v0.7.0. Changes must be additive: the only
 allowed additions are `--status-file` on `serve` and a `kiosk` subcommand, and
-both are optional here so the guard can land before them. Anything else that
-appears or disappears fails.
+both are optional here so the guard can land before them. The `kiosk` options
+are not in the snapshot, so `test_kiosk_has_its_options` pins them. Anything
+else that appears or disappears fails.
 """
 
 import argparse
@@ -118,6 +119,20 @@ def test_subcommand_options(parser: argparse.ArgumentParser, command: str) -> No
 @pytest.mark.parametrize("command", sorted(SNAPSHOT_POSITIONALS))
 def test_subcommand_positionals(parser: argparse.ArgumentParser, command: str) -> None:
     assert _positionals(_subparsers(parser)[command]) == SNAPSHOT_POSITIONALS[command]
+
+
+def test_kiosk_has_its_options(parser: argparse.ArgumentParser) -> None:
+    got = _options(_subparsers(parser)["kiosk"])
+    assert got == {
+        "--status-file",
+        "--title",
+        "--address",
+        "--fb-match",
+        "--sleep-after",
+        "--once",
+        "--png-dir",
+    }
+    assert _positionals(_subparsers(parser)["kiosk"]) == []
 
 
 UNITS = Path(__file__).parent.parent / "deploy" / "ansible" / "roles"

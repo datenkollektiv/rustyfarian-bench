@@ -1,0 +1,6 @@
+# {{ ansible_managed }} — deploy/ansible/roles/display/templates/91-rustyfarian-bench-touch.rules.j2
+# The touch panel's event node to the kiosk's group, read only, so a tap can wake the panel. The
+# group gets no other input device and the kiosk user joins no `input` group. `:=` because
+# Raspberry Pi OS's 99-com.rules hands every input node to group `input` after this file.
+# Undo by hand: remove this file, then udevadm control --reload; udevadm trigger --subsystem-match=input
+SUBSYSTEM=="input", KERNEL=="event*", ACTION!="remove", ATTRS{name}=="{{ display_touch_name }}", GROUP:="{{ display_user }}", MODE:="0640"

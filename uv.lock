@@ -665,7 +665,7 @@ wheels = [
 
 [[package]]
 name = "rustyfarian-bench"
-version = "0.8.0.dev0"
+version = "0.8.0.dev1"
 source = { editable = "." }
 dependencies = [
     { name = "pyserial" },

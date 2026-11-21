@@ -69,6 +69,7 @@ deploy/
   sops.example.yaml             # template for the repo root's .sops.yaml (gitignored)
   bench-client.sh               # `just pi-check` and `just pi-submit`: URL, CA and token for the live bench
   display-probe.sh              # run on the Pi: which SPI panel is it? loads an overlay at runtime, no reboot
+  touch-probe.sh                # run on the Pi: does the touch panel report taps? read-only, the kiosk keeps running
   cloud-init/
     user-data.j2                # hostname, admin user, SSH pubkey, no password login, SSH on
     network-config.j2           # netplan: Ethernet DHCP, optional Wi-Fi
@@ -347,17 +348,25 @@ Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
 - `display_drm: false` picks the fbtft driver instead, also proven, which counts its rotation from 270 and wants 90;
 - the overlay loads at the next reboot, which the run reports and never does itself;
 - a udev rule that releases the kernel console from the panel: headless, the panel is framebuffer 0, so fbcon would show the login prompt on it and blank it after ten minutes (`echo 1 > /sys/class/vtconsole/vtconN/bind` gives the console back);
-- a system user `bench-display`, whose hardened unit `rustyfarian-bench-display.service` gets the `video` group and the framebuffer device and nothing else, no network included;
+- a udev rule that hands the touch panel's event node, found by `display_touch_name` (`ADS7846 Touchscreen`), to `root:bench-display` with mode `0640`;
+  it sets `GROUP:=` and `MODE:=`, because Raspberry Pi OS's `99-com.rules` runs later and would give the node to group `input`, which the kiosk user never joins;
+- a system user `bench-display`, whose hardened unit `rustyfarian-bench-display.service` gets the `video` group, the framebuffer device and reads of input devices, and nothing else, no network included;
+  `DeviceAllow=char-input r` admits every input device, so only the udev rule narrows the reads to the touch node;
 - the unit runs `rustyfarian-bench kiosk` from the bench's install, which waits for the panel's framebuffer, reads `/run/rustyfarian-bench/status.json` once a second and writes a frame only when the screen changes;
 - while a job runs, the panel shows its board, example, elapsed time and step bar, then the last 5 verdicts;
 - when idle, it shows "rustyfarian bench", the installed version, the address from `display_address` (default `bench_fqdn:bench_port`) and the last 5 verdicts;
-- a heartbeat older than 30 s shows "status is stale", a missing file "bench offline", and a stop at shutdown "good-bye";
+- a heartbeat older than 30 s shows "status is stale", a missing file "bench offline", and a stop at shutdown "good-bye", even while the panel is dark;
+- after `display_sleep_after` seconds (default 900, 0 keeps it lit) without a queued or running job or a change of the status, the kiosk draws a black frame, since this panel's backlight has no software switch;
+- a tap, a new job, or `serve` going stale or stopping wakes it within a second, and a tap does nothing else;
+- without a readable touch node the panel never goes dark, and the journal says why once;
 - a bench upgrade changes `bench_version` in the unit, which restarts the kiosk from the new install;
 - the play fails when `bench_version` is older than `display_kiosk_since` (v0.8.0), the first release with `kiosk`;
 - the v1 leftovers `/usr/local/bin/rustyfarian-bench-display` and `python3-pil` are removed without `autoremove`, so nothing else apt marks unused goes with them.
 
 `just display-smoke` installs `rustyfarian-bench[kiosk]` on the controller as the Pi does, into `tmp/display/`, and renders status fixtures there with `kiosk --once --png-dir`: idle, running, queued, long names, stale, stopped and maintenance.
-It checks each frame's size, that the screens differ and that a stop draws the farewell, using Pillow's fallback font where DejaVu is absent, so a layout change is seen before it reaches the Pi.
+It checks each frame's size, that the screens differ and that a stop draws the farewell.
+A last phase runs `kiosk --sleep-after 1` against a fake touch node and checks asleep and woken: the frame goes black, one appended tap brings the idle screen back, and a stop draws the farewell over the dark panel.
+It uses Pillow's fallback font where DejaVu is absent, so a layout change is seen before it reaches the Pi.
 
 ## Step 4 — Check it
 
@@ -376,6 +385,7 @@ The token reaches `curl` through a pipe, never through its arguments.
 `detect` probes every port, so run `pi-check` while no job runs.
 
 After the first reboot the panel shows the idle screen with the version and the address; if it stays white, `journalctl -u rustyfarian-bench-display` on the Pi says whether the framebuffer was found.
+It goes dark after 15 minutes without a job; a tap brings it back.
 
 Then the real test, a consumer's check run on the Pi:
 
@@ -416,6 +426,7 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Read the logs           | `journalctl -u rustyfarian-bench -f`, jobs in `/srv/bench/outbox/`   |
 | Clear old jobs          | by hand: images may hold Wi-Fi credentials and the outbox is kept forever |
 | Panel white or stale    | `journalctl -u rustyfarian-bench-display`; `display-probe.sh` loads the overlay |
+| Panel black             | asleep: tap it; no wake, see the journal's `touch:` line and run `touch-probe.sh` |
 
 `pi-upgrade`, a tool bump and a restart are refused while a job is unfinished; see the `bench` role above.
 A rollback below v0.8.0 runs `just pi-provision` from a checkout of the matching repo tag, since this checkout's `display` role runs `kiosk` and refuses an older `bench_version`.

@@ -1,6 +1,6 @@
 ---
-# both listen to one notification and run in this order: new rules, then applied to a console
-# that already exists (none before the first reboot; the rule itself has nothing to do then)
+# all three listen to one notification and run in this order: new rules, then applied to a console
+# and a touch panel that already exist (none before the first reboot; the rules have nothing to do then)
 - name: Reload the udev rules
   ansible.builtin.command:
     argv: [udevadm, control, --reload]
@@ -10,6 +10,14 @@
 - name: Apply the udev rules to the consoles
   ansible.builtin.command:
     argv: [udevadm, trigger, --action=add, --subsystem-match=vtconsole]
+  changed_when: true
+  listen: Reload udev
+
+# `change`, the touch rule matches any action but remove; `--settle`, so the node has its new group
+# before the display restart below reopens it
+- name: Apply the udev rules to the touch panel
+  ansible.builtin.command:
+    argv: [udevadm, trigger, --action=change, --subsystem-match=input, --sysname-match=event*, --settle]
   changed_when: true
   listen: Reload udev
 

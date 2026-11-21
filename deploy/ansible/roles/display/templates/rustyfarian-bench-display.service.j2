@@ -17,13 +17,15 @@ Environment="BENCH_TITLE={{ display_title | replace('%', '%%') }}"
 Environment=BENCH_VERSION={{ bench_version }}
 Environment=BENCH_FB_MATCH={{ display_fb_match }}
 Environment="BENCH_ADDRESS={{ display_address | replace('%', '%%') }}"
+Environment="BENCH_TOUCH_MATCH={{ display_touch_name | replace('%', '%%') }}"
 # the file serve's unit writes; /run stays readable under ProtectSystem=strict
-ExecStart=/usr/local/bin/rustyfarian-bench kiosk --status-file /run/rustyfarian-bench/status.json
+ExecStart=/usr/local/bin/rustyfarian-bench kiosk --status-file /run/rustyfarian-bench/status.json --sleep-after {{ display_sleep_after }}
 Restart=on-failure
 RestartSec=5
 
-# as rustyfarian-bench.service, plus: the framebuffer only and no network;
-# PrivateDevices would hide /dev/fb*, so the device filter does that job
+# as rustyfarian-bench.service, plus: the framebuffer, reads of input devices and no network;
+# PrivateDevices would hide /dev/fb* and /dev/input, so the device filter does that job. It cannot
+# name the touch panel, whose event number moves; udev gives this group that node and no other.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
@@ -31,6 +33,7 @@ NoNewPrivileges=yes
 UMask=0077
 DevicePolicy=closed
 DeviceAllow=char-fb rw
+DeviceAllow=char-input r
 PrivateNetwork=yes
 RestrictAddressFamilies=none
 CapabilityBoundingSet=

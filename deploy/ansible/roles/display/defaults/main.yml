@@ -16,3 +16,8 @@ display_user: bench-display
 display_address: "{{ bench_fqdn }}:{{ bench_port }}"
 # the first release with the `kiosk` command; an older bench_version fails the play
 display_kiosk_since: "0.8.0"
+# seconds without a queued or running job before the kiosk draws the panel black; a tap or a job
+# wakes it; 0 keeps it lit
+display_sleep_after: 900
+# the touch controller's input name (/proc/bus/input/devices); the udev rule and the kiosk match it
+display_touch_name: "ADS7846 Touchscreen"
