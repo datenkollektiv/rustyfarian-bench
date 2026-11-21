@@ -56,3 +56,4 @@ v1 decisions carry over (`bench-kiosk-v1.md`): stock `piscreen` DRM overlay, Pil
 - 2026-11-20 — Updated: gate cleared (panel proven on the Pi, shows v0.7.0); decisions confirmed unchanged
 - 2026-11-21 — Implemented: status writer, `Worker(observer=)`, `serve --status-file`, `kiosk` and `[kiosk]`, display role switched; four open questions resolved by the approved plan
 - 2026-11-21 — Pi: `just pi-provision-dev` (v0.8.0.dev0) installed; the panel showed a live `esp32` `hal_esp32_connect_async` run (pass 3/3, seen by the user); second run `ok=62 changed=0`; `pi-accept.sh`: modes, contents, isolation and units pass, heartbeat section not yet seen
+- 2026-11-21 — Two review rounds fixed: bench role refuses a `bench_version` without `--status-file`, kiosk text fits its column in pixels, history sorted by finish time, status writes close their fd, heartbeat survives a failed first write, steps read from appended log lines

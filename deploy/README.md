@@ -343,7 +343,9 @@ Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
 
 **`display`** — the Waveshare 3.5" panel as the bench's kiosk:
 
-- `dtoverlay=piscreen,drm,speed=16000000,rotate=180` in a managed block at the end of `/boot/firmware/config.txt`: the stock Raspberry Pi overlay drives this panel through the mainline DRM driver, found with `deploy/display-probe.sh` (`display_drm: false` picks the fbtft driver, also proven, which counts its rotation from 270 and wants 90); the overlay loads at the next reboot, which the run reports and never does;
+- `dtoverlay=piscreen,drm,speed=16000000,rotate=180` in a managed block at the end of `/boot/firmware/config.txt`, the stock overlay driving this panel through the mainline DRM driver (found with `deploy/display-probe.sh`);
+- `display_drm: false` picks the fbtft driver instead, also proven, which counts its rotation from 270 and wants 90;
+- the overlay loads at the next reboot, which the run reports and never does itself;
 - a udev rule that releases the kernel console from the panel: headless, the panel is framebuffer 0, so fbcon would show the login prompt on it and blank it after ten minutes (`echo 1 > /sys/class/vtconsole/vtconN/bind` gives the console back);
 - a system user `bench-display`, whose hardened unit `rustyfarian-bench-display.service` gets the `video` group and the framebuffer device and nothing else, no network included;
 - the unit runs `rustyfarian-bench kiosk` from the bench's install, which waits for the panel's framebuffer, reads `/run/rustyfarian-bench/status.json` once a second and writes a frame only when the screen changes;
@@ -388,7 +390,7 @@ A consumer without one needs a prebuilt merged image instead:
 just pi-submit rustyfarian-network c3 hal_c3_connect_async --wait --image /path/to/hal_c3_connect_async.bin
 ```
 
-The image must be merged with the consumer's own bootloader (`espflash save-image --merge` with its flash arguments); a bare ELF gets espflash's bootloader, which may not boot, see the [remote bench](../README.md#remote-bench).
+The image must be merged with the consumer's own bootloader (`espflash save-image --merge` with its flash arguments); a bare ELF gets espflash's bootloader, which may not boot, see [the image](../README.md#the-image).
 The first Pi passed this way: three steps, Wi-Fi link up, a DHCP lease, 20 s without a panic.
 
 `pi-submit` wraps `just submit`: the URL comes from the inventory, the CA and the first token from `bench.yaml`, and the token reaches only the `submit` process.
@@ -401,9 +403,9 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Task                    | How                                                                  |
 |:------------------------|:---------------------------------------------------------------------|
 | Upgrade the bench       | bump `bench_version` (a release tag), `just pi-provision`            |
-| Roll back the bench     | set `bench_version` to the previous tag, `just pi-provision`; below v0.8.0 see below |
+| Roll back the bench     | previous tag in `bench_version`, `just pi-provision`; below v0.8.0, see below |
 | Test unreleased code    | a `.devN` version in `pyproject.toml`, `just pi-provision-dev`       |
-| Upgrade the OS          | `just pi-upgrade`                                                    |
+| Upgrade the OS          | `just pi-upgrade` (asks first; `just --yes pi-upgrade` does not)     |
 | Reboot after it         | when reported: `sudo reboot` on the Pi once no job runs, then `just pi-check` |
 | Check for drift         | `just pi-provision --check --diff` previews; `just pi-idempotent` applies twice |
 | Upgrade espflash or uv  | bump version and sha256 in `roles/tools/defaults`, `just pi-provision` |
@@ -413,7 +415,7 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Rebuild the Pi          | Steps 1–4 again; the CA and tokens survive in `shared-secrets/`      |
 | Read the logs           | `journalctl -u rustyfarian-bench -f`, jobs in `/srv/bench/outbox/`   |
 | Clear old jobs          | by hand: images may hold Wi-Fi credentials and the outbox is kept forever |
-| Panel white or stale    | `journalctl -u rustyfarian-bench-display`; `display-probe.sh` loads the overlay live |
+| Panel white or stale    | `journalctl -u rustyfarian-bench-display`; `display-probe.sh` loads the overlay |
 
 `pi-upgrade`, a tool bump and a restart are refused while a job is unfinished; see the `bench` role above.
 A rollback below v0.8.0 runs `just pi-provision` from a checkout of the matching repo tag, since this checkout's `display` role runs `kiosk` and refuses an older `bench_version`.

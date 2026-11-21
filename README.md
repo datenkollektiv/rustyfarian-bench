@@ -1,4 +1,4 @@
-# rustyfarian-bench
+# Rustyfarian (remote) Bench
 
 <p align="center">
   <img
@@ -18,47 +18,36 @@
 [![mypy: strict](https://img.shields.io/badge/mypy-strict-2a6db2.svg)](https://mypy.readthedocs.io/)
 
 Guided, rerunnable hardware bench tests for the rustyfarian ESP32 crates.
-
 A consumer repo describes its boards and checks as TOML under `bench/`.
-The runner builds the example, waits for the right board, flashes it, resets it, captures the serial output, and walks the operator through each step with an automatic verdict.
+The runner builds the example, waits for the right board, flashes and resets it, captures the serial output, and walks the operator through each step with an automatic verdict.
 
 ## Getting started
 
-Prerequisites: [`just`](https://github.com/casey/just), [`uv`](https://docs.astral.sh/uv/), [`espflash`](https://github.com/esp-rs/espflash) and the consumer's Rust toolchain.
-Python ≥ 3.12 is enough; `uvx` provisions it if missing.
-Hardware runs are tested on macOS only; Linux serial ports are detected but untested on a bench, and Windows is unsupported.
+- Needs [`just`](https://github.com/casey/just), [`uv`](https://docs.astral.sh/uv/), [`espflash`](https://github.com/esp-rs/espflash) and the consumer's Rust toolchain.
+- Python ≥ 3.12 is enough; `uvx` provisions it if missing.
+- Hardware runs are tested on macOS only; Linux serial ports are detected but untested on a bench, and Windows is unsupported.
 
-Run a pinned release from a consumer repo, with no rustyfarian-bench checkout:
+A consumer runs a pinned release without a checkout; bumping the tag in its `bench` recipe opts into a new release:
 
 ```bash
-uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.1.0 rustyfarian-bench --repo . list
-uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.1.0 rustyfarian-bench --repo . run s3
+uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.7.0 rustyfarian-bench --repo . list
+uvx --from git+https://github.com/datenkollektiv/rustyfarian-bench@v0.7.0 rustyfarian-bench --repo . run s3
 ```
-
-Pin the tag in the consumer's `bench` recipe; bumping it is how a consumer opts into a new release.
 
 ## Usage
 
-From a consumer repo (e.g. `rustyfarian-peripherals`):
-
 ```bash
-just bench hal_s3_b3f     # one example, then offers the scenario's next examples
-just bench s3/rotary      # one check on one board
-just bench s3             # every check for a board
+# from a consumer repo (e.g. rustyfarian-peripherals)
+just bench hal_s3_b3f              # one example, then offers the scenario's next examples
 just bench hal_s3_b3f --no-twins   # only the named example, not its twins
-```
+just bench s3/rotary               # one check on one board
+just bench s3                      # every check for a board
 
-From this repo, against a sibling checkout:
-
-```bash
-just bench rustyfarian-peripherals s3 b3f   # <repo> <target> [flags]
-just bench rustyfarian-ws2812 s3
+# from this repo, against a sibling checkout: <repo> <target> [flags]
+just bench rustyfarian-peripherals s3 b3f
 just bench-list rustyfarian-ws2812
-```
 
-Directly:
-
-```bash
+# directly
 uv run --project ../rustyfarian-bench rustyfarian-bench --repo . run hal_s3_b3f
 uv run --project ../rustyfarian-bench rustyfarian-bench --repo . list
 uv run --project ../rustyfarian-bench rustyfarian-bench detect
@@ -66,43 +55,101 @@ uv run --project ../rustyfarian-bench rustyfarian-bench detect
 
 ## Session flow
 
-1. Build the example (`commands.build`, or the board's own `build`), so the slow part runs before the board is needed.
-2. Poll serial ports and run `espflash board-info` on each until the board's chip (and optional MAC) answers.
-   - A port another session holds is skipped, so two boards can bench side by side.
-   - Pin `mac` in `bench/bench.local.toml` when two boards share a chip: the lock is only held while a session reads its port.
-   - `run --unique-board` refuses to guess instead: with two boards of the board's chip attached and no pinned `mac` or `--port`, the run ends with an `error` naming both ports.
-   - Under `--unique-board`, a busy or silent port blocks the decision until it resolves or `--detect-timeout` ends it.
-   - A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash.
-   - Such a board is found by its USB identity when it declares `usb_id = "vid:pid"`, plus `usb_serial` to tell two identical bridges apart.
-   - Otherwise, it needs `--port`, since a lone attached port is no proof of which board it is, and the run stops without it.
-   - `run --detect-timeout SECONDS` ends the wait for a missing board with an `error` after that long; without it the run waits for a plug-in.
-   - No probe starts after the limit, though a running probe may overrun it.
-3. Flash (`commands.flash`, or the board's own `flash`, with `{port}`).
-4. Open the port exclusively, reset into the app, and read it with pyserial, reopening across USB re-enumeration.
-   - The open clears RTS before DTR, so it does not itself reset an ESP (USB Serial/JTAG or the usual RTS/DTR auto-reset circuit).
-   - On a `reset = "dtr"` board the reader raises DTR only for its reset pulse, though the OS or driver may still toggle the lines while opening.
-   - The reset is an RTS pulse (esptool's USB-JTAG sequence) by default.
-   - `reset = "dtr"` pulses DTR for auto-reset bridges (Arduino Nano, CH340/FT232).
-   - `reset = "none"` skips the pulse but keeps the ESP-safe open, whose brief DTR high can still reset a DTR auto-reset board (use `"dtr"` for those).
-   - `baud` is per board.
-   - Every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`.
-5. Run the steps.
-   - Each step waits for Enter and drops the backlog before its clock starts (`arm = false` for a step that must read what the reset printed, e.g. the banner).
-   - A failed step offers a retry, then asks what the operator saw and records it as the step's `note`.
-   - An `attended` watch (a `duration` step with `attended = true`) ends early and passes when the operator presses Enter, with the detail `ended by operator after N s of M s`.
-   - A `reject` seen before the Enter still fails it.
-   - Timed waits show a shrinking countdown on a terminal.
-   - An armed `duration` step's prompt shows its length: Enter keeps it, and a typed number of seconds changes it for this run.
-   - A longer length asks for confirmation, and a changed one adds `(scenario: N s)` to the step detail.
-6. Offer the scenario's next example (e.g. the `idf` twin), then append the result to `bench/<board>/results.jsonl`.
-   - An example you asked for (everything but the twins of a named example) that you decline is recorded as `skipped`.
+Each example runs through these stages; a failed stage jumps to the teardown, so every example leaves a recorded result.
 
-`--unattended` runs only the steps that need no person (no `confirm`, no `attended = true`) and implies `--yes`; `--attended` runs only the steps that need one.
-A scenario with no step for the mode is not built, flashed or recorded, and a run with nothing left fails.
-Each result records its `mode` (`"unattended"`, `"attended"` or `null`), so a pass in one mode is never read as a full pass.
-To wrap up a release, run `just bench <board> --unattended` and walk away, then `just bench <board> --attended`; the release needs both to pass.
+```mermaid
+flowchart TD
+    setup["Run the setup commands"] --> build["Build the example"]
+    build --> detect["Detect the board"]
+    detect -->|"no board yet"| detect
+    detect --> flash["Flash it"]
+    flash --> serial["Open the port, reset into the app, read serial"]
+    serial --> steps["Run the steps"]
+    steps --> teardown["Run the teardown commands"]
+    setup -.->|"fails: error"| teardown
+    build -.->|"fails: fail"| teardown
+    detect -.->|"error: the run stops"| teardown
+    flash -.->|"fails: fail"| teardown
+    teardown --> record["Append the result to results.jsonl"]
+    record --> next{"Next example of the check?"}
+    next -->|"yes"| setup
+    next -->|"declined"| skipped["Record its requested examples left as skipped"]
+    next -->|"none left"| check{"Next check?"}
+    skipped --> check
+    check -->|"yes"| setup
+    check -->|"declined"| skipall["Record the later checks' requested examples as skipped"]
+    check -->|"none left"| summary(["Print the summary"])
+    next -->|"the run stopped"| summary
+    skipall --> summary
+```
 
-The runner never uses `espflash monitor` (without a TTY it leaves a USB-JTAG chip in the flash stub) or `espflash reset` (it enters the bootloader first and leaves a native-USB S3 in download mode).
+- The build (`commands.build`, or the board's own `build`) comes before detection, so the slow part is done before the board is needed.
+- The flash (`commands.flash`, or the board's own `flash`) gets the detected `{port}`.
+- The next example is often a twin, e.g. the `idf` one; a declined example you asked for is `skipped`, declined twins of a named example record nothing.
+- The runner never uses `espflash monitor` (without a TTY it leaves a USB-JTAG chip in the flash stub).
+- It never uses `espflash reset` either: that enters the bootloader first and leaves a native-USB S3 in download mode.
+
+### Detecting the board
+
+- The bench polls the serial ports and runs `espflash board-info` on each until the board's chip (and optional MAC) answers.
+- A port another session holds is skipped, so two boards can bench side by side.
+- Pin `mac` in `bench/bench.local.toml` when two boards share a chip: the lock is only held while a session reads its port.
+- `run --detect-timeout SECONDS` ends the wait with an `error`; without it, the run waits for a plug-in.
+- No `board-info` starts after the limit, though a running one may overrun it.
+- `run --unique-board` refuses to guess: two boards of the chip, with no pinned `mac` or `--port`, end the run with an `error` naming both ports.
+- Under `--unique-board`, a busy or silent port blocks the decision until it resolves or `--detect-timeout` ends it.
+
+A board with `detect = false` (e.g. an AVR, which espflash cannot identify) never runs espflash.
+It is found by `usb_id = "vid:pid"`, plus `usb_serial` to tell two identical bridges apart.
+Without them it needs `--port`, and the run stops without it: a lone attached port is no proof of which board it is.
+
+### Reading serial
+
+- The port is opened exclusively and read with pyserial, which reopens it across USB re-enumeration.
+- The open clears RTS before DTR, so it does not itself reset an ESP (USB Serial/JTAG or the usual RTS/DTR auto-reset circuit).
+- Every line is echoed and written to `bench/<board>/logs/<example>-<stamp>.log`; `baud` is per board.
+
+| Board `reset`     | Pulse                                                      |
+|:------------------|:-----------------------------------------------------------|
+| `"rts"` (default) | RTS, esptool's USB-JTAG sequence                           |
+| `"dtr"`           | DTR, for auto-reset bridges (Arduino Nano, CH340/FT232)    |
+| `"none"`          | no pulse, but the ESP-safe open stays                      |
+
+- On a `"dtr"` board the reader raises DTR only for its pulse, though the OS or driver may still toggle the lines while opening.
+- Under `"none"`, the open's brief DTR high can still reset a DTR auto-reset board; use `"dtr"` for those.
+
+### Running the steps
+
+```mermaid
+flowchart LR
+    arm["Wait for Enter, drop the backlog"] --> reset["Reset, if the step has reset"]
+    reset --> probe["Start the probe, if any"]
+    probe --> run["Run the run command, if any"]
+    run --> judge{"Judge"}
+    judge -->|"pass"| done(["Next step"])
+    judge -->|"fail"| retry{"Retry?"}
+    retry -->|"yes"| arm
+    retry -->|"no"| note["Ask what the operator saw: the step's note"]
+    note --> cont{"Continue?"}
+    cont -->|"yes"| done
+    cont -->|"no"| stop(["End the example"])
+```
+
+- The step's clock starts after the Enter, once the operator has read the instruction.
+- `arm = false` skips the Enter and keeps the backlog, for a step that must read what the reset printed (e.g. the banner).
+- Timed waits show a shrinking countdown on a terminal.
+- An armed `duration` step's prompt shows its length: Enter keeps it, a typed number of seconds changes it for this run.
+- A longer length asks for confirmation; a changed one adds `(scenario: N s)` to the step detail.
+- An `attended` watch (a `duration` step with `attended = true`) ends early and passes on Enter, with the detail `ended by operator after N s of M s`.
+- A `reject` seen before that Enter still fails it.
+
+### Unattended and attended runs
+
+- `--unattended` runs only the steps that need no person (no `confirm`, no `attended = true`) and implies `--yes`.
+- `--attended` runs only the steps that need one.
+- A scenario with no step for the mode is not built, flashed or recorded; a run with nothing left fails.
+- Each result records its `mode` (`"unattended"`, `"attended"` or `null`), so a pass in one mode is never read as a full pass.
+- To wrap up a release, run `just bench <board> --unattended` and walk away, then `--attended`; the release needs both to pass.
 
 ## Consumer layout
 
@@ -141,30 +188,12 @@ build = ["just", "build-avr-bin", "{example}"]  # per-board commands override [c
 flash = ["just", "flash-avr-bin", "{example}", "{port}"]
 ```
 
-### Per-machine board settings
+- Commands may use only `{example}`, plus `{port}` in `flash` and `{image}` in `image`.
+- A board's own `build`, `flash` or `image` overrides `[commands]`.
+- `image` is optional and consumer-owned: it writes the flash image `submit` uploads to `{image}`, and `run` never runs it, see [The image](#the-image).
+- A board's `checks` must not list a name twice.
 
-Two boards of one chip are told apart by `mac`, and a MAC differs on every machine.
-Put it in the optional `bench/bench.local.toml` and add `bench/bench.local.toml` to `.gitignore`:
-
-```toml
-[boards.s3]
-mac = "dc:54:75:aa:bb:cc"   # yours: `just detect` shows it
-```
-
-- Allowed keys per board are `mac`, `usb_id`, `usb_serial` and `baud`; any other key, an undefined board or a top-level table other than `boards` is a load error naming the file.
-- A local value wins over the one in `bench.toml`; keys it does not set keep their committed value.
-- `bench.toml` must be valid on its own; an error that only appears after merging names `bench.local.toml`.
-- `bench.local.toml` is not a scenario, and `bench/<board>/*.toml` never matches it.
-- A `mac` in either file must have the form `aa:bb:cc:dd:ee:ff`; anything else is a load error, not a run that never finds its board.
-- `just detect` shows the MAC of each attached board.
-- `submit` sends only the `mac` and `baud` from `bench.toml`: local values describe this machine, not the bench host.
-- A run says "pinned by bench.local.toml" when the file supplied the MAC, and the wrong-board warning names the pinned MAC and its file.
-
-`image` is optional and consumer-owned, like `build` and `flash`.
-It writes the flash image `submit` uploads (the whole flash from `0x0`: bootloader, partition table and app) to `{image}`; a board's own `image` overrides `[commands]`.
-It may use `{example}` and `{image}`, and `run` never runs it.
-
-A scenario:
+A scenario, `bench/<board>/<check>.toml`:
 
 ```toml
 examples = ["hal_s3_b3f", "idf_s3_b3f"]   # run in order; the shared steps apply to each
@@ -176,6 +205,26 @@ reject = 'count=[4-9]'
 settle = 2
 ```
 
+`examples` must not be empty, and a name must not contain `/` or `..`.
+
+### Per-machine board settings
+
+Two boards of one chip are told apart by `mac`, which differs on every machine, so it goes in the optional `bench/bench.local.toml` (add it to `.gitignore`):
+
+```toml
+[boards.s3]
+mac = "dc:54:75:aa:bb:cc"   # yours: `just detect` shows it
+```
+
+- Allowed keys per board: `mac`, `usb_id`, `usb_serial` and `baud`.
+- Any other key, an undefined board or a top-level table other than `boards` is a load error naming the file.
+- A local value wins; keys it does not set keep their committed value.
+- `bench.toml` must be valid on its own; an error that only appears after merging names `bench.local.toml`.
+- `bench.local.toml` is not a scenario: `bench/<board>/*.toml` never matches it.
+- A `mac` in either file must have the form `aa:bb:cc:dd:ee:ff`, or loading fails instead of a run that never finds its board.
+- `submit` sends only the `mac` and `baud` from `bench.toml`: local values describe this machine, not the bench host.
+- A run says "pinned by bench.local.toml" when the file supplied the MAC, and the wrong-board warning names the pinned MAC and its file.
+
 ## Step kinds
 
 Each step has `say` and exactly one of:
@@ -186,65 +235,47 @@ Each step has `say` and exactly one of:
 | `duration` | `reject` never matches and the serial link stays up for that many seconds |
 | `confirm`  | the operator answers yes                                                  |
 
-`probe` is a modifier on `expect` or `duration` that takes the lines from a host command instead of the serial port (see "Host probes").
+| Modifier   | Effect                                                                         |
+|:-----------|:-------------------------------------------------------------------------------|
+| `reject`   | fails the step on a match                                                      |
+| `settle`   | keeps watching `reject` for that many seconds after the last `expect`          |
+| `optional` | turns a miss into a warning                                                    |
+| `attended` | needs a person although there is no `confirm`, e.g. a PIR or a button press    |
+| `reset`    | resets the board as the step starts, e.g. for a calibration window at boot     |
+| `probe`    | reads a host command instead of serial, see [Host probes](#host-probes)        |
 
-Modifiers:
-- `reject` fails the step on match.
-- `settle` keeps watching `reject` after the last `expect`.
-- `optional` turns a miss into a warning.
-- `attended` marks a step that needs a person although it has no `confirm`, e.g. a PIR or a button press.
-- `reset` resets the board once the step starts (after Enter when armed), for a check the firmware runs at boot such as a calibration window.
 - `reset` is not allowed on a `reset = "none"` board.
+- `expect` also sees lines printed before the step started (e.g. the boot banner); `duration` judges only new lines.
+- A lost serial link fails a `duration` or `settle` window.
+- The re-enumeration after a reset is ignored for `RESET_GRACE` (5 s; none with `reset = "none"`), so an unplug in that time goes unnoticed.
 
-`expect` steps also see lines printed before the step started (e.g. the boot banner); `duration` steps only judge new lines.
+The definition is checked when it loads, before anything is built:
 
-A named group in an `expect` pattern captures the matched text for later steps of the same example: `(?P<pole>SOUTH|NORTH)`.
-A later step's `expect` or `reject` refers to it as `(?P=pole)`, matched literally, so `(?!(?P=pole))(?:SOUTH|NORTH)` asks for the other pole.
-Captures are recorded in the step's result; a reference whose step was skipped by the mode, or failed, fails the step at once.
-A later step that defines the same name takes it over: what it does not capture is cleared, never kept from the earlier step.
-Inside a character class, after `\`, or in a comment, `(?P=name)` is literal text, not a reference.
+- Booleans and numbers must be real TOML values: `optional = "false"` is an error, not true.
+- `timeout` and `duration` must be greater than 0, and `settle` 0 or more.
+- Regexes must compile.
+
+### Captures
+
+- A named group in an `expect` pattern captures the match for later steps of the same example: `(?P<pole>SOUTH|NORTH)`.
+- A later `expect` or `reject` refers to it as `(?P=pole)`, matched literally: `(?!(?P=pole))(?:SOUTH|NORTH)` asks for the other pole.
+- A reference needs an earlier step that captures the name; inside a character class, after `\` or in a comment, `(?P=name)` is plain text.
+- A reference whose step failed or was skipped by the mode fails the step at once.
+- A later step that captures the same name takes it over: what it does not capture is cleared, never kept.
+- Captures are recorded in the step's result.
 
 ### Prompt placeholders
 
-`say` and `confirm` may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures, so an attended step names the device to act on: `say = "Unplug {board} on {port} (MAC {mac})"`.
-A prompt is guidance, not a verdict: a value that is missing renders as `{ip}?` and the step still runs.
-The result records the names in `lacked`, and the runner warns once per step.
-A literal brace is written `{{` or `}}`.
-Captures do not cross a mode split, so an `--attended` run may show a marker for a capture made by an unattended step.
-`StepResult.say` (and `say` in `results.jsonl`) is the rendered text, as shown on the terminal.
+- `say` and `confirm` may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures: `say = "Unplug {board} on {port} (MAC {mac})"`.
+- A prompt is guidance, not a verdict: a missing value renders as `{ip}?` and the step still runs.
+- The result lists such names in `lacked`, and the runner warns once per step.
+- Captures do not cross a mode split, so an `--attended` run may show a marker for a capture an unattended step made.
+- A literal brace is `{{` or `}}`; a stray brace, another name or a placeholder nested in a format spec is a load error.
+- `say` in the result and in `results.jsonl` is the rendered text, as shown on the terminal.
 
 ### Host probes
 
-`probe = ["just", "mqtt-watch", "{example}"]` runs a host command and judges its stdout with the step's `expect`, `reject`, `settle` and `duration`, so a broker check needs no `confirm`.
-
-The command:
-- is an argv list, with no shell, run in the consumer directory in its own process group;
-- has its stdout matched, while stderr is only written to the log and echoed;
-- gets SIGTERM at the end of the step, and SIGKILL after 2 s, so a `just` wrapper and its children go too;
-- writes its own log `<example>-<stamp>.probe<N>.log` beside the serial log;
-- counts as a lost link when it exits before the step ends, so `settle` and `duration` need a watcher that keeps running;
-- must flush each line: `python -u`, `stdbuf -oL`;
-- is an `error` result that ends the session when it cannot start, like a missing build tool;
-- is POSIX only (macOS and Linux).
-
-When a step fails, the detail adds `probe exited N` and the last stderr lines.
-A retry starts the command again, so a probe must be a passive watcher.
-
-Modes:
-- Probe steps need no person unless `attended`: `--unattended` runs them and `--attended` skips them.
-- `attended = true` is allowed on a probe step: `--attended` runs it, `--unattended` skips it.
-- That keeps a probe next to the attended action it observes, such as an unplug.
-- On an attended probe with `duration`, Enter ends the wait early.
-
-Serial lines are not judged during a probe step; a lost serial link is only warned about afterwards.
-`serial_reject = 'PANIC|panicked'` (only with `probe`) judges the serial lines while the probe runs:
-- A match fails the step with `rejected serial line: '<line>'`, even after the probe matched.
-- Serial lines from before the step are drained first, and a match is seen within 0.2 s.
-- Its `(?P=name)` references are checked like `reject`.
-
-Pitfalls:
-- A probe that subscribes to a broker sees the retained replay at subscribe time, so make the pattern require a live message, e.g. match `retain=0`.
-- A probe and a `run` in the same step have no readiness handshake, so a non-retained message published before the subscriber is up can be missed.
+`probe = ["just", "mqtt-watch", "{example}"]` judges a host command's stdout with the step's `expect`, `reject`, `settle` and `duration`, so a broker check needs no `confirm`.
 
 ```toml
 [[step]]
@@ -255,13 +286,41 @@ reject = 'Connection refused'
 timeout = 60
 ```
 
+The command:
+
+- is a non-empty argv list, run without a shell in the consumer directory, in its own process group, POSIX only (macOS and Linux);
+- needs `expect` or `duration`, and cannot be combined with `confirm` or `reset`;
+- may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures, the reserved names winning over a capture of the same name;
+- fails the step before it starts when a capture it uses is missing, or `{mac}` is unknown;
+- has its stdout matched, while stderr only goes to the log and the terminal;
+- must flush each line (`python -u`, `stdbuf -oL`);
+- writes `<example>-<stamp>.probe<N>.log` beside the serial log;
+- gets SIGTERM when the step ends and SIGKILL after 2 s, so a `just` wrapper and its children go too;
+- counts as a lost link when it exits early, so `settle` and `duration` need a watcher that keeps running;
+- is an `error` that ends the session when it cannot start, like a missing build tool.
+
+- A failed step's detail adds `probe exited N` and the last stderr lines.
+- A retry starts the command again, so a probe must be a passive watcher.
+- A probe step needs no person: `--unattended` runs it, `--attended` skips it.
+- With `attended = true` it is the other way round, so a probe can sit next to the attended action it observes, such as an unplug; Enter ends an attended `duration` early.
+- Serial lines are not judged during a probe step; a lost serial link is only warned about afterwards.
+- `serial_reject = 'PANIC|panicked'` (only with `probe`, must compile) judges serial while the probe runs.
+- Its match fails the step with `rejected serial line: '<line>'`, even after the probe matched; older serial lines are drained first, and a match is seen within 0.2 s.
+- Its `(?P=name)` references are checked like `reject`.
+
+Pitfalls:
+
+- A broker subscriber sees the retained replay at subscribe time, so require a live message, e.g. match `retain=0`.
+- A probe and a `run` in one step have no readiness handshake: a non-retained message published before the subscriber is up can be missed.
+
 ### Setup, teardown and run
 
-A scenario can start and restore its host side, and a step can act on the host before it is judged.
+A scenario can prepare and restore its host side, and a step can act on the host before it is judged.
 
 ```toml
 examples = ["hal_c6_mqtt_lwt"]
-setup = [["just", "mosquitto", "up"], ["just", "mqtt-pub", "bench-ping", "1"]]   # prove the broker accepts a connection; a retained-status read fails on a fresh broker
+# prove the broker accepts a connection: a retained-status read fails on a fresh broker
+setup = [["just", "mosquitto", "up"], ["just", "mqtt-pub", "bench-ping", "1"]]
 teardown = [["just", "mosquitto", "up"]]
 hook_timeout = 60                    # per setup/teardown command, default 60
 
@@ -272,58 +331,37 @@ run_timeout = 10                     # default 30
 expect = '\[app\] rx topic=\S+/cmd payload=hello retained=false'
 ```
 
-Hooks:
-- The order per example is setup, build, detect, flash, steps, teardown.
-- Hooks run once per example, and an example the mode skips entirely runs no hooks.
-- A setup command that exits non-zero, times out or cannot start is an `error` with `setup failed: <summary>`.
-- After a failed setup, nothing is built or flashed, the rest of setup is skipped, and the session goes on with the next example.
-- Teardown always runs: after pass, fail, error, a failed setup and Ctrl-C.
-- A second Ctrl-C skips the rest of teardown and stops the session.
-- A failing teardown command is a warning; the verdict does not change.
-- `setup` may use `{example}` and `{board}`, and `teardown` may also use `{port}`, `{chip}` and `{mac}`.
-- If detection never happened, a teardown command that needs `{port}`, `{chip}` or `{mac}` is skipped and recorded as `not run: {port} unknown`.
-- `hook_timeout` defaults to 60 s.
+`setup` and `teardown` (lists of argv lists, see the [session flow](#session-flow)):
 
-`run`:
-- is an argv list on an `expect` or `duration` step, never on `confirm`;
+- run once per example; an example the mode skips entirely runs neither.
+- `setup` may use `{example}` and `{board}`, `teardown` also `{port}`, `{chip}` and `{mac}`.
+- A setup command that exits non-zero, times out or cannot start is an `error`, `setup failed: <summary>`.
+- Then the rest of setup is skipped, nothing is built or flashed, and the session goes on with the next example.
+- Teardown always runs: after any verdict, a failed setup and Ctrl-C; a second Ctrl-C skips the rest and stops the session.
+- A failing teardown command is a warning; the verdict stays.
+- Without a detected board, a teardown command that needs `{port}`, `{chip}` or `{mac}` is skipped as `not run: {port} unknown`.
+- `hook_timeout` must be greater than 0.
+
+`run` (a non-empty argv list on an `expect` or `duration` step, never with `confirm`):
+
 - may use `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and earlier captures;
-- follows the per-attempt order arm prompt, reset, probe starts, `run`, judging, so a `probe` can see what `run` causes;
+- starts after the probe, so a `probe` can see what `run` causes;
 - does not drain serial on a `duration` step, so the board's reaction is judged;
-- fails the step with `run failed: <summary>` before judging when it fails;
-- runs again on a retry, and the evidence is the last attempt's;
-- has a `run_timeout` that defaults to 30 s and needs `run`;
-- needs no person unless the step is `attended` or has `confirm`;
-- is not captured for matching; use a `probe` for that.
+- fails the step with `run failed: <summary>` before judging;
+- runs again on a retry, the evidence being the last attempt's;
+- has a `run_timeout` (greater than 0, default 30 s) that needs `run`;
+- needs no person unless the step is `attended`;
+- is not matched: use a `probe` for that.
 
 Every hook and `run` command:
-- runs in the consumer directory, without a shell, and POSIX only;
-- does not end its process group when it exits normally, so a daemon that `setup` starts survives;
-- has its group ended on a timeout or Ctrl-C with SIGTERM, then SIGKILL after 2 s.
 
-Each command is recorded as `argv`, `exit_code`, `duration`, `timed_out`, `error`, `stdout_tail`, `stderr_tail` and `log`.
-The tails keep the last 5 lines, each cut to 200 characters.
-The full output is in `<example>-<stamp>.setup<N>.log`, `.run<n>.log` and `.teardown<N>.log` beside the serial log.
-`results.jsonl` gains `setup`, `teardown` (lists) and `steps[].run`; they are always present, and the old keys are unchanged.
+- runs in the consumer directory, without a shell, POSIX only;
+- leaves its process group alone when it exits normally, so a daemon `setup` starts survives;
+- has its group ended on a timeout or Ctrl-C: SIGTERM, then SIGKILL after 2 s;
+- is recorded as `argv`, `exit_code`, `duration`, `timed_out`, `error`, `stdout_tail`, `stderr_tail` and `log`, the tails keeping the last 5 lines, each cut to 200 characters;
+- writes its full output to `<example>-<stamp>.setup<N>.log`, `.run<n>.log` or `.teardown<N>.log` beside the serial log.
 
-The definition is checked strictly when it loads, before anything is built:
-- Booleans and numbers must be real TOML values, so `optional = "false"` is an error rather than true.
-- `timeout` and `duration` must be greater than 0, and `settle` must be 0 or more.
-- Regexes must compile, and a `(?P=name)` reference needs an earlier step that captures `name`.
-- Commands may use only `{example}`, plus `{port}` in `flash`.
-- A `probe` must be a non-empty list of strings, and may use only `{port}`, `{example}`, `{board}`, `{chip}`, `{mac}` and names an earlier step captures; the reserved names win over a capture of the same name.
-- A `probe` needs `expect` or `duration`, and cannot be combined with `confirm` or `reset`; `attended` is allowed.
-- `serial_reject` needs `probe` and must compile.
-- `run` must be a non-empty list of strings, needs `expect` or `duration`, and cannot be combined with `confirm`.
-- `run_timeout` must be greater than 0 and needs `run`.
-- `setup` and `teardown` must be lists of argv lists; `setup` may use only `{example}` and `{board}`, `teardown` also `{port}`, `{chip}` and `{mac}`.
-- `say` and `confirm` are checked like `probe`: only the reserved names and earlier captures, and a stray brace is an error, as is a placeholder nested in a format spec; a literal brace is written `{{` or `}}`.
-- `hook_timeout` must be greater than 0.
-- A probe placeholder whose capture is missing at run time fails the step at once, before the command starts; so does `{mac}` when the board's MAC is unknown.
-- `examples` must not be empty, and the names must not contain `/` or `..`.
-- A board's `checks` must not list a name twice.
-
-A lost serial link fails a `duration` or `settle` window.
-The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s; none with `reset = "none"`), so an unplug within the first 5 s after the reset goes unnoticed by watch windows.
+`results.jsonl` always has `setup`, `teardown` (lists) and `steps[].run`; the older keys are unchanged.
 
 ## Verdicts and exit codes
 
@@ -338,15 +376,41 @@ The re-enumeration caused by the reset is ignored for `RESET_GRACE` (5 s; none w
 
 An `error` from a missing tool, or from a board not attached within `--detect-timeout`, ends the session.
 
-`run` exits 0 when every example passed and 3 when the only shortfall is `unverified` or skipped work.
-It exits 1 on any fail, error or abort, 2 on a bench definition error, and 130 on Ctrl-C between examples.
+| `run` exits | When                                                  |
+|:------------|:------------------------------------------------------|
+| 0           | every example passed                                  |
+| 3           | the only shortfall is `unverified` or skipped work    |
+| 1           | any fail, error or abort                              |
+| 2           | a bench definition error                              |
+| 130         | Ctrl-C between examples                               |
 
 ## Remote bench
 
 A shared host with the boards attached (e.g. a Raspberry Pi) runs checks for clients that see no USB, such as a devcontainer.
 `submit` builds locally and uploads an image and the scenario; `serve` flashes, judges and stores the result.
 
-On the host:
+```mermaid
+sequenceDiagram
+    participant C as Client (submit)
+    participant S as Bench host (serve)
+    participant W as Worker
+    participant B as Board
+    C->>C: check the scenario, build, run the image command
+    C->>S: POST /jobs with the scenario, the image and a bearer token
+    S->>S: check the token, then the scenario
+    S-->>C: the job, queued
+    S->>W: queue it, one job at a time in arrival order
+    W->>B: run the example unattended in a child process
+    Note over W,B: detect by chip, espflash write-bin at 0x0, run the steps
+    W->>S: verdict and exit code, kept in the outbox
+    loop with --wait, once a second
+        C->>S: GET /jobs/ID?offset=N
+        S-->>C: the job and the log from byte N
+    end
+    C->>C: exit like run
+```
+
+### Running the host
 
 ```bash
 uv tool install 'rustyfarian-bench[serve] @ git+https://github.com/datenkollektiv/rustyfarian-bench'
@@ -355,18 +419,17 @@ rustyfarian-bench serve --host 0.0.0.0 --port 8443 --outbox /srv/bench/outbox \
     --ssl-certfile /srv/bench/bench.pem --ssl-keyfile /srv/bench/bench-key.pem
 ```
 
-The host needs `espflash`, a uv-managed Python ≥ 3.12 and a user in the `dialout` group.
-Without the `serve` extra, `serve` prints the install hint and exits 2.
-
-- `serve` listens on `127.0.0.1:8000` by default, open and in the clear, for an ssh tunnel.
-- `--token-file` works on loopback too, for a reverse proxy or `tailscale serve` that adds TLS in front.
-- Any other `--host` needs `--token-file` and both TLS files, or `serve` exits 2 naming the missing one; see [Tokens and TLS](#tokens-and-tls).
+- The host needs `espflash`, a uv-managed Python ≥ 3.12 and a user in the `dialout` group.
+- Without the `serve` extra, `serve` prints the install hint and exits 2.
 - `--job-timeout` (default 600 s) ends a job that runs too long.
 - `--detect-timeout` (default 30 s) fails a job whose board is not attached in that time, so the worker is free for the next job.
+- `--status-file PATH` keeps a status file for the [kiosk panel](#the-kiosk-panel); without it, `serve` keeps none.
+- How clients may reach it is under [Tokens and TLS](#tokens-and-tls).
+- From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just submit <repo> <board> <example> --bench http://127.0.0.1:8000` sends it a sibling repo's check.
 
-From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just submit <repo> <board> <example> --bench http://127.0.0.1:8000` sends a sibling repo's check to it.
+### Submitting from a client
 
-From the client, in a consumer repo whose `bench.toml` has an `image` command:
+In a consumer repo whose `bench.toml` has an `image` command:
 
 ```bash
 export RUSTYFARIAN_BENCH_URL=https://bench.example.net:8443
@@ -375,20 +438,36 @@ export RUSTYFARIAN_BENCH_CA=/path/to/bench-ca.pem   # only with a private CA
 rustyfarian-bench --repo . submit s3 hal_s3_b3f --wait
 ```
 
-`submit <board> <example>` builds (`--no-build` skips it), runs the `image` command, uploads and prints the job id.
-`--bench URL` names the bench host when `RUSTYFARIAN_BENCH_URL` is not set, and wins over it when it is.
-`--image PATH` uploads that file instead and skips both commands; `--check NAME` picks a check when several list the example.
-Without `--wait`, `submit` returns at once and the job runs on; with it, `submit` polls the log once a second and exits like `run`.
-Ctrl-C while waiting leaves the job running and exits 130; an unreachable host exits 2.
+- `submit <board> <example>` builds (`--no-build` skips it), runs the `image` command, uploads and prints the job id.
+- `--image PATH` uploads that file instead and skips both commands.
+- `--check NAME` picks a check when several list the example.
+- `--bench URL` names the bench host, and wins over `RUSTYFARIAN_BENCH_URL`.
+- Without `--wait`, `submit` returns at once; with it, it polls the log once a second and exits like `run`.
+- That is 0 on `pass`, 3 on `unverified` or `incomplete`, and 1 on any other verdict.
+- An unreachable host exits 2; Ctrl-C while waiting exits 130 and leaves the job running.
 
-One worker runs the jobs of the whole host one at a time, in arrival order, so a probe can never touch a board mid-flash.
-Each job runs the unchanged `run <example> --unattended --no-build --no-twins --detect-timeout N --unique-board` as a child process in a repo the server writes itself.
-The board is found by chip detection, and a `mac` in the client's `bench.toml` (never one from `bench.local.toml`) is carried and pinned in that repo.
-An unpinned job refuses to guess between boards of the same chip, so with two attached it ends as `error` naming both ports; a silent stray port also blocks an unpinned job until `--detect-timeout`.
-The `mac` must have the form `aa:bb:cc:dd:ee:ff`; loading the config rejects a malformed one before `submit` builds, and `serve` answers 422.
-The flash is `espflash write-bin` of the image at `0x0`, so nothing from the client's `bench.toml` runs on the host except the scenario's steps.
+### The image
+
+- The image is the whole flash from `0x0`: bootloader, partition table and app.
+- It must carry the consumer's own bootloader: the `image` command runs `espflash save-image --merge` with the same arguments as the consumer's `flash`, and so must an `--image PATH`.
+- An image merged from a bare ELF gets espflash's bundled bootloader, which may not boot.
+- On the rustyfarian consumers it does not: their flash passes a cached IDF v5.3.3 `--bootloader`, while espflash 4.x bundles a v5.5.1 one that fails with "efuse blk rev".
+
+### Inside a job
+
+- One worker runs the jobs of the whole host one at a time, in arrival order, so a probe can never touch a board mid-flash.
+- Each job runs the unchanged `run <example> --unattended --no-build --no-twins --detect-timeout N --unique-board` as a child process, in a repo the server writes itself.
+- The flash is `espflash write-bin` of the image at `0x0`, so nothing from the client's `bench.toml` runs on the host except the scenario's steps.
+- The board is found by chip detection; a `mac` from the client's `bench.toml` (never from `bench.local.toml`) is pinned in the job's repo.
+- A malformed `mac` fails loading before `submit` builds, and `serve` answers 422.
+- An unpinned job refuses to guess: two boards of the chip end it as `error` naming both ports, and a silent stray port blocks it until `--detect-timeout`.
+- A job keeps the recorded verdict only when `run`'s exit code agrees with it; otherwise it is `error`.
+- A job a restart interrupted ends as `error`; killing `serve` with SIGKILL can leave a running child flashing.
+
+### Refused scenarios
 
 A scenario is refused, by `submit` before it builds and by `serve` again on arrival, when it has:
+
 - `setup` or `teardown` commands;
 - a `probe` or `run` on a step an unattended run reaches;
 - a board with `detect = false`;
@@ -396,6 +475,8 @@ A scenario is refused, by `submit` before it builds and by `serve` again on arri
 
 An attended-only step may keep its `probe` or `run`: it is not run remotely.
 The remote run is unattended, so a verdict from it is never a full pass; the attended steps still need `--attended` on the bench.
+
+### The outbox
 
 Every job is kept in `outbox/<id>/`, the id being `YYYYmmdd-HHMMSS-<hex>` in UTC:
 
@@ -409,45 +490,81 @@ outbox/20261112-093000-a1b2c3/
 └── result.json    verdict, detail, exit code and the result rows
 ```
 
-`GET /jobs/<id>?offset=N` returns the job and the log from byte `N`; `POST /jobs` takes a JSON body with the scenario and the base64 image, and answers with the job, `submitter` included.
-`submit --wait` exits 0 on `pass`, 3 on `unverified` or `incomplete`, and 1 on anything else, as `run` does.
-A job keeps the recorded verdict only when `run`'s exit code agrees with it; otherwise it is `error`.
-A job a restart interrupted ends as `error`; killing `serve` with SIGKILL can leave a running child flashing.
+- `outbox/` is kept forever, and an image can hold Wi-Fi credentials, so clear the outbox yourself.
+- `GET /jobs/<id>?offset=N` returns the job and the log from byte `N`.
+- `POST /jobs` takes a JSON body with the scenario and the base64 image, and answers with the job, `submitter` included.
 
-An image can hold Wi-Fi credentials and `outbox/` is kept forever, so clear the outbox yourself.
+### The kiosk panel
+
+`rustyfarian-bench kiosk` draws the bench's state on an SPI panel next to the boards, from the status file `serve --status-file` keeps.
+
+```mermaid
+flowchart LR
+    file{"Status file readable?"} -->|"no"| offline["bench offline"]
+    file -->|"yes"| fresh{"Heartbeat within 30 s?"}
+    fresh -->|"no"| stale["status is stale"]
+    fresh -->|"yes"| running{"A job running?"}
+    running -->|"yes"| job["board, elapsed time, example, step bar, last 5 verdicts"]
+    running -->|"no"| idle["title, version, address, last 5 verdicts"]
+```
+
+- Both screens with a job list show how many jobs wait (`+N queued`).
+- The status file reserves a `maintenance` state, which the kiosk draws, for a maintenance mode that is not written yet.
+- `serve` rewrites the file every 10 s and on every job change, and removes it when it stops.
+- The file is world-readable, so it leaves out job ids, submitters, chips, checks, details and log text.
+- The step bar follows the `▶ [n/total]` step lines of the job's log.
+- `kiosk` reads the file once a second, draws only when the screen changes, and draws "good-bye" when stopped.
+- It finds the panel by part of its framebuffer name (`--fb-match`, default `ili9486`), checking every 5 s until it appears.
+- `--status-file` defaults to `/run/rustyfarian-bench/status.json`; `--title` and `--address` fill the idle screen.
+- `--once` draws one screen and exits; `--png-dir DIR` also saves each screen as a PNG.
+- It needs the `kiosk` extra (Pillow); `just display-smoke` renders every screen into `tmp/display/` without a panel, and `deploy/README.md` sets it up on the Pi.
 
 ### Tokens and TLS
 
 Off loopback, every request needs a bearer token from the server's token file, and the token travels only over TLS.
-The token file is TOML, one line per person and machine, each token at least 32 printable ASCII characters.
-Generate every token with `openssl rand -hex 32`: `serve` checks the length, not the randomness.
-Other users must have no access to the file (`chmod 600`), or `serve` exits 2 at start and answers 503 later; group access is allowed, for a group that runs `serve`:
+
+| Way in                                         | TLS from                             | `--token-file`         |
+|:-----------------------------------------------|:-------------------------------------|:-----------------------|
+| ssh tunnel to the default `127.0.0.1:8000`     | the tunnel (`serve` is in the clear) | optional               |
+| reverse proxy or `tailscale serve` to loopback | the proxy                            | give it, or it is open |
+| any other `--host`                             | `--ssl-certfile`, `--ssl-keyfile`    | required               |
+
+- Any other `--host` without `--token-file` and both TLS files makes `serve` exit 2, naming the missing one.
+- Behind `tailscale serve`, a loopback `serve` without `--token-file` leaves the app behind the tailnet open.
+
+#### The token file
 
 ```toml
 # /srv/bench/tokens.toml, chmod 600
-fluffi-mbp = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"   # openssl rand -hex 32
+alice-laptop = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"   # openssl rand -hex 32
 ci = "..."
 ```
 
-`serve` reads the file on every request, so a line added or removed takes effect at once, without a restart that would kill a running job.
-Each job records the token's name as `submitter`, never the token; a file that cannot be read stops `serve` at start and answers 503 to everyone later.
-A request without a valid token is 401 before any of its body is read, and `GET /jobs/<id>` needs the token too.
-Any valid token submits jobs and reads every job, whoever sent it: `submitter` is attribution, not access control.
-Deleting a line stops that token's next request, but a job it already queued or started still runs.
-Keep each token dedicated to this bench, and revoke it at once if it may have leaked.
+- One line per person and machine; each token is at least 32 printable ASCII characters.
+- Generate every token with `openssl rand -hex 32`: `serve` checks the length, not the randomness.
+- Other users must have no access (`chmod 600`; a group that runs `serve` may).
+- A file others can access, or that cannot be read, makes `serve` exit 2 at start and answer 503 to everyone later.
+- `serve` reads the file on every request: a line added or removed counts at once, without a restart that would kill a running job.
+- A deleted line stops that token's next request; a job it already queued or started still runs.
+- Keep each token dedicated to this bench, and revoke it at once if it may have leaked.
+- A request without a valid token is 401 before any of its body is read; `GET /jobs/<id>` needs one too.
+- Any valid token submits jobs and reads every job: `submitter` records the token's name (never the token) for attribution, not access control.
 
-The client sends `Authorization: Bearer $RUSTYFARIAN_BENCH_TOKEN`; an empty variable counts as unset.
-With a token set, `submit` refuses an `http://` bench that is not loopback and exits 2, so a token never crosses the network in the clear; `http://127.0.0.1:…` through an ssh tunnel is fine.
-`submit` reaches a loopback bench directly, ignoring `HTTP_PROXY` and the system proxy, so a proxy never sees the token.
-A 401 names the variable; a certificate the client does not trust names `RUSTYFARIAN_BENCH_CA`.
-The token is never carried over a redirect.
+#### The client side
 
-TLS is uvicorn's: `--ssl-certfile` and `--ssl-keyfile` go to it as they are, loaded once at start; a path that is not a file makes `serve` exit 2.
-With a private CA, point `RUSTYFARIAN_BENCH_CA` at the CA's PEM on every client; it replaces the system CAs, and as public material it can live in the consumer repo.
-Python 3.13+ verifies certificates strictly: the server certificate needs Subject and Authority Key Identifier extensions and a `subjectAltName` for the bench's DNS name, or the client fails with "Missing Authority Key Identifier".
-[mkcert](https://github.com/FiloSottile/mkcert) issues such certificates; with plain openssl, pass an extension file that sets `subjectKeyIdentifier = hash`, `authorityKeyIdentifier = keyid, issuer` and the `subjectAltName`.
-A Let's Encrypt certificate under a domain you own needs no `RUSTYFARIAN_BENCH_CA`.
-Tailscale in front (`tailscale serve` to a loopback `serve`) is another way to get TLS and reachability; give that `serve` `--token-file` too, or the app behind the tailnet is open.
+- The client sends `Authorization: Bearer $RUSTYFARIAN_BENCH_TOKEN`; an empty variable counts as unset.
+- With a token set, `submit` refuses an `http://` bench that is not loopback (exit 2); `http://127.0.0.1:…` through an ssh tunnel is fine.
+- `submit` reaches a loopback bench directly, ignoring `HTTP_PROXY` and the system proxy, so no proxy sees the token, and never carries it over a redirect.
+- A 401 names the variable; a certificate the client does not trust names `RUSTYFARIAN_BENCH_CA`.
+
+#### Certificates
+
+- TLS is uvicorn's: `--ssl-certfile` and `--ssl-keyfile` are passed as they are and loaded once at start; a path that is not a file makes `serve` exit 2.
+- With a private CA, point `RUSTYFARIAN_BENCH_CA` at its PEM on every client; it replaces the system CAs and, being public, can live in the consumer repo.
+- A Let's Encrypt certificate under a domain you own needs no `RUSTYFARIAN_BENCH_CA`.
+- Python 3.13+ needs Subject and Authority Key Identifier extensions and a `subjectAltName` for the bench's DNS name, or fails with "Missing Authority Key Identifier".
+- [mkcert](https://github.com/FiloSottile/mkcert) issues such certificates.
+- With plain openssl, set `subjectKeyIdentifier = hash`, `authorityKeyIdentifier = keyid, issuer` and the `subjectAltName` in an extension file.
 
 ### From a devcontainer
 
@@ -463,11 +580,13 @@ The agent-sandbox devcontainer forwards secrets from the host shell through `rem
 }
 ```
 
-Export the token in the shell that launches the IDE, next to the existing `CLAUDE_CODE_OAUTH_TOKEN` line; in Codespaces, store it as a repository secret of the same name.
-The sandbox firewall allows egress by DNS name only: add the bench's name to `.devcontainer/allowlist.d/60-project.txt` and rebuild.
-It refuses IP literals and `.local` or `.internal` names, so the bench needs a real multi-label name (a router name such as `bench.fritz.box`, or a name under your own domain) and a static address, because the allowlist pins the IP resolved at container start.
-Until it has one, `ssh -N -L 8000:127.0.0.1:8000 pi@<lan-ip>` from inside the container reaches a loopback `serve` with no allowlist change; pass `--bench http://127.0.0.1:8000` to use it, since `RUSTYFARIAN_BENCH_URL` points at the https name.
-Anything in the container's environment is readable by the coding agent; a leaked token flashes boards and reads the outbox, and revoking it is deleting one line.
+- Export the token in the shell that launches the IDE, next to `CLAUDE_CODE_OAUTH_TOKEN`; in Codespaces, store it as a repository secret of the same name.
+- The coding agent can read the container's environment: a leaked token flashes boards and reads the outbox, and revoking it is deleting one line.
+- The sandbox firewall allows egress by DNS name only: add the bench's name to `.devcontainer/allowlist.d/60-project.txt` and rebuild.
+- It refuses IP literals and `.local` or `.internal` names, so the bench needs a real multi-label name (e.g. `bench.fritz.box`, or one under your own domain).
+- It pins the IP resolved at container start, so the bench also needs a static address.
+- Until then, `ssh -N -L 8000:127.0.0.1:8000 pi@<lan-ip>` from inside the container reaches a loopback `serve` with no allowlist change.
+- Use it with `--bench http://127.0.0.1:8000`, since `RUSTYFARIAN_BENCH_URL` names the https host.
 
 ## Development
 
