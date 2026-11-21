@@ -1079,3 +1079,76 @@ def test_a_prepared_job_directory_has_no_local_board_file(tmp_path: Path) -> Non
 
     assert not list((tmp_path / job.id).rglob("bench.local.toml"))
     assert config.load(tmp_path / job.id).boards["c6"].mac_source is None
+
+
+# -- the worker's observer -----------------------------------------------------------------------
+
+
+def _observed_run(
+    outbox: Path, runner_fn: Callable[[Path], None], observer: Callable[[str, Path], None], n: int
+) -> list[Path]:
+    worker = Worker(runner_fn, observer=observer)
+    dirs = [_queued(outbox) for _ in range(n)]
+    worker.start()
+    try:
+        for d in dirs:
+            worker.submit(d)
+        assert wait_until(lambda: all(read(d).status == "done" for d in dirs), 5.0)
+        assert wait_until(lambda: worker._thread.is_alive(), 1.0)  # still serving
+    finally:
+        worker.stop()
+    return dirs
+
+
+def test_the_observer_sees_start_before_the_runner_and_end_after_the_verdict(
+    tmp_path: Path,
+) -> None:
+    seen: list[tuple[str, str, str]] = []
+
+    def observer(event: str, job_dir: Path) -> None:
+        seen.append((event, job_dir.name, read(job_dir).status))
+
+    def fake(job_dir: Path) -> None:
+        seen.append(("run", job_dir.name, read(job_dir).status))
+        run_job(job_dir, 30, child())
+
+    [d] = _observed_run(tmp_path, fake, observer, 1)
+
+    assert wait_until(lambda: len(seen) == 3, 5.0)
+    assert [e for e, _, _ in seen] == ["start", "run", "end"]
+    assert seen[0][2] != "done"
+    assert seen[2] == ("end", d.name, "done")
+
+
+def test_the_observer_sees_the_end_after_an_error_verdict_is_on_disk(tmp_path: Path) -> None:
+    ends: list[tuple[str | None, str | None]] = []
+
+    def observer(event: str, job_dir: Path) -> None:
+        if event == "end":
+            job = read(job_dir)
+            ends.append((job.verdict, job.detail))
+
+    def boom(job_dir: Path) -> None:
+        raise RuntimeError("boom")
+
+    _observed_run(tmp_path, boom, observer, 1)
+
+    assert wait_until(lambda: len(ends) == 1, 5.0)
+    assert ends == [("error", "RuntimeError: boom")]
+
+
+def test_a_raising_observer_changes_no_verdict_and_the_next_job_runs(tmp_path: Path) -> None:
+    def observer(event: str, job_dir: Path) -> None:
+        raise ValueError("observer broke")
+
+    first, second = _observed_run(tmp_path, lambda d: run_job(d, 30, child()), observer, 2)
+
+    assert read(first).verdict == "pass"
+    assert read(second).verdict == "pass"
+
+
+def test_without_an_observer_the_worker_behaves_as_before(tmp_path: Path) -> None:
+    [d] = _worker_runs(tmp_path, lambda d: run_job(d, 30, child()), 1)
+
+    assert read(d).verdict == "pass"
+    assert Worker()._observer is None

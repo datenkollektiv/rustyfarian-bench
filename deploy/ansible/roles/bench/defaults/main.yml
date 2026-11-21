@@ -1,6 +1,13 @@
 ---
 # a release tag: the install is skipped when `uv tool list` already shows it
-bench_version: v0.6.0
+bench_version: v0.7.0
+# the first release whose `serve` has `--status-file`, which the unit passes; an older
+# bench_version fails the play before the install or the unit changes
+bench_status_file_since: "0.8.0"
+# a wheel on the controller, installed instead of the tag to test unreleased code; `just
+# pi-provision-dev` builds it and sets bench_version to its vX.Y.Z.devN version
+bench_wheel: ""
+bench_wheel_dir: /var/cache/rustyfarian-bench/wheels
 bench_repo: https://github.com/datenkollektiv/rustyfarian-bench
 bench_home: /srv/bench
 bench_outbox: "{{ bench_home }}/outbox"

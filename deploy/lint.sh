@@ -17,7 +17,11 @@ for playbook in site.yml seed.yml ca-init.yml; do
     # shellcheck disable=SC2086
     $ansible_cmd ansible-playbook -i inventory.example.yml --syntax-check "$playbook"
 done
-uvx --python 3.13 --from "ansible-lint==$ANSIBLE_LINT" --with "ansible-core==$ANSIBLE_CORE" \
+# ansible-lint loads every builtin callback, and ansible-core 2.22 warns for its deprecated
+# oneline and tree, which nothing here uses; the syntax checks above and the seed runs below
+# still show deprecations in our own playbooks
+ANSIBLE_DEPRECATION_WARNINGS=false \
+    uvx --python 3.13 --from "ansible-lint==$ANSIBLE_LINT" --with "ansible-core==$ANSIBLE_CORE" \
     ansible-lint --profile moderate site.yml seed.yml ca-init.yml
 
 bootfs="$root/tmp/deploy-lint/bootfs"

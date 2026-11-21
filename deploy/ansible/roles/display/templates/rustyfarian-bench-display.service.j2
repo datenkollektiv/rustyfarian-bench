@@ -1,0 +1,51 @@
+# {{ ansible_managed }} — deploy/ansible/roles/display/templates/rustyfarian-bench-display.service.j2
+[Unit]
+Description=rustyfarian-bench display kiosk
+Documentation=https://github.com/datenkollektiv/rustyfarian-bench/tree/main/deploy
+# time-sync, so the status file's age is judged by a set clock where possible
+After=local-fs.target time-sync.target
+# a framebuffer surprise ends the kiosk; stop retrying instead of looping forever
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User={{ display_user }}
+Group={{ display_user }}
+SupplementaryGroups=video
+Environment="BENCH_TITLE={{ display_title | replace('%', '%%') }}"
+Environment=BENCH_VERSION={{ bench_version }}
+Environment=BENCH_FB_MATCH={{ display_fb_match }}
+Environment="BENCH_ADDRESS={{ display_address | replace('%', '%%') }}"
+# the file serve's unit writes; /run stays readable under ProtectSystem=strict
+ExecStart=/usr/local/bin/rustyfarian-bench kiosk --status-file /run/rustyfarian-bench/status.json
+Restart=on-failure
+RestartSec=5
+
+# as rustyfarian-bench.service, plus: the framebuffer only and no network;
+# PrivateDevices would hide /dev/fb*, so the device filter does that job
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+UMask=0077
+DevicePolicy=closed
+DeviceAllow=char-fb rw
+PrivateNetwork=yes
+RestrictAddressFamilies=none
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

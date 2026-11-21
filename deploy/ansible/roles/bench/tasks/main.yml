@@ -30,10 +30,24 @@
 
 - name: Check bench_version
   ansible.builtin.assert:
-    that: bench_version is match('v[0-9]+\.[0-9]+\.[0-9]+\Z')
+    that: >-
+      bench_version is match('v[0-9]+\.[0-9]+\.[0-9]+\Z')
+      or (bench_wheel | length > 0 and bench_version is match('v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+\Z'))
     # the install is skipped by matching `uv tool list`, which prints `rustyfarian-bench vX.Y.Z`;
     # a branch or SHA would never match and reinstall and restart serve on every run
-    fail_msg: bench_version must be a release tag such as v0.6.0, not {{ bench_version }}
+    fail_msg: >-
+      bench_version must be a release tag such as v0.6.0, or a wheel's dev version such as
+      v0.8.0.dev0 with bench_wheel, not {{ bench_version }}
+    quiet: true
+
+# The unit passes `--status-file`, which older releases lack; checked here, before the install
+# and the unit change, as `serve` would otherwise fail at start after the restart
+- name: Check that bench_version has the status file
+  ansible.builtin.assert:
+    that: bench_version[1:] is version(bench_status_file_since, '>=')
+    fail_msg: >-
+      the bench unit runs `rustyfarian-bench serve --status-file`, which needs bench_version
+      v{{ bench_status_file_since }} or later, not {{ bench_version }}
     quiet: true
 
 # --- user and directories ---
@@ -79,6 +93,51 @@
   changed_when: false
   check_mode: false
 
+# unreleased code: a dev wheel keeps its version across rebuilds, so a changed copy reinstalls
+- name: Create the wheel directory
+  ansible.builtin.file:
+    path: "{{ bench_wheel_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: bench_wheel | length > 0
+
+- name: Copy the wheel
+  ansible.builtin.copy:
+    src: "{{ bench_wheel }}"
+    dest: "{{ bench_wheel_dir }}/{{ bench_wheel | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: bench_wheel_copy
+  when: bench_wheel | length > 0
+
+# A copied wheel whose install was refused or failed must not be forgotten: the next run copies
+# nothing and finds the same version listed, so the need lives on disk until an install succeeds.
+- name: Look for a wheel a previous run did not install
+  ansible.builtin.stat:
+    path: "{{ bench_wheel_dir }}/install-pending"
+  register: bench_wheel_pending
+
+- name: Decide whether to install
+  ansible.builtin.set_fact:
+    bench_install_due: >-
+      {{ ('rustyfarian-bench ' ~ bench_version) not in bench_tools.stdout_lines
+         or bench_wheel_copy is changed
+         or (bench_wheel | length > 0 and bench_wheel_pending.stat.exists) }}
+
+- name: Remember that the wheel must be installed
+  ansible.builtin.file:
+    path: "{{ bench_wheel_dir }}/install-pending"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: bench_install_due | bool and bench_wheel | length > 0
+
 # the jobs were read by tasks/busy.yml at the start of the play
 - name: Refuse to upgrade under unfinished jobs
   ansible.builtin.assert:
@@ -87,8 +146,10 @@
       rustyfarian-bench {{ bench_version }} would replace the code these jobs run from:
       {{ bench_unfinished | join(', ') }}. Wait, or rerun with -e bench_force_restart=true.
     quiet: true
-  when: ('rustyfarian-bench ' ~ bench_version) not in bench_tools.stdout_lines
+  when: bench_install_due | bool
 
+# --reinstall-package: a rebuilt dev wheel keeps its version and file name;
+# the display role's handler restarts the kiosk too, since a dev wheel leaves its unit unchanged
 - name: Install rustyfarian-bench {{ bench_version }}
   ansible.builtin.command:
     argv:
@@ -96,13 +157,25 @@
       - tool
       - install
       - --force
+      - --reinstall-package
+      - rustyfarian-bench
       - --python
       - /usr/bin/python3
-      - rustyfarian-bench[serve] @ git+{{ bench_repo }}@{{ bench_version }}
+      - "rustyfarian-bench[serve,kiosk] @ {{ bench_source }}"
+  vars:
+    bench_source: >-
+      {{ ('file://' ~ bench_wheel_dir ~ '/' ~ bench_wheel | basename) if bench_wheel
+         else ('git+' ~ bench_repo ~ '@' ~ bench_version) }}
   environment: *bench_uv_env
-  when: ('rustyfarian-bench ' ~ bench_version) not in bench_tools.stdout_lines
+  when: bench_install_due | bool
   register: bench_install
   changed_when: true
+  notify: Restart the display
+
+- name: Forget the installed wheel
+  ansible.builtin.file:
+    path: "{{ bench_wheel_dir }}/install-pending"
+    state: absent
 
 # --- TLS: the key stays on the Pi, the controller signs its CSR ---
 

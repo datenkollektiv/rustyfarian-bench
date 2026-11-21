@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import remote
+from . import __version__, remote
 from .config import ConfigError
+from .status import StatusWriter
 
 # Decoded image: the largest flash is 16 MiB on these boards; the scenario is a small TOML file.
 MAX_IMAGE = 16 * 1024 * 1024
@@ -171,24 +172,34 @@ def create_app(
     runner: Callable[[Path], None] | None = None,
     detect_timeout: float | None = remote.DETECT_TIMEOUT,
     token_file: Path | None = None,
+    status: StatusWriter | None = None,
 ) -> FastAPI:
     """The app; `runner` replaces the child-process job runner (for tests).
 
     With `token_file`, every request needs a bearer token from that file; without, the app is
-    open, which is only for loopback.
+    open, which is only for loopback. With `status`, the kiosk status file follows the worker.
     """
     outbox = outbox.resolve()
-    worker = remote.Worker(runner, timeout=job_timeout, detect_timeout=detect_timeout)
+    worker = remote.Worker(
+        runner,
+        timeout=job_timeout,
+        detect_timeout=detect_timeout,
+        observer=None if status is None else status.observe,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         outbox.mkdir(parents=True, exist_ok=True)
         remote.recover(outbox)
+        if status is not None:
+            status.start()
         worker.start()
         try:
             yield
         finally:
             worker.stop()  # ends a running child, so no flashing goes on after shutdown
+            if status is not None:
+                status.stop()
 
     app = FastAPI(title="rustyfarian-bench remote bench", lifespan=lifespan)
     app.add_middleware(_BodyLimit)
@@ -206,6 +217,8 @@ def create_app(
             job = remote.create_job(outbox, meta, req.scenario, image, submitter)
         except ConfigError as e:
             raise HTTPException(422, str(e)) from None
+        if status is not None:
+            status.job_queued(job.id)  # before submit, so the worker cannot finish it first
         worker.submit(remote.job_path(outbox, job.id))
         return asdict(job)
 
@@ -234,6 +247,7 @@ def serve(
     token_file: Path | None = None,
     ssl_certfile: Path | None = None,
     ssl_keyfile: Path | None = None,
+    status_file: Path | None = None,
 ) -> None:
     """Run the server in this process until it is stopped.
 
@@ -256,5 +270,8 @@ def serve(
     for flag, path in (("--ssl-certfile", ssl_certfile), ("--ssl-keyfile", ssl_keyfile)):
         if path is not None and not path.is_file():
             raise ConfigError(f"{flag} {path}: no such file")
-    app = create_app(outbox, job_timeout, detect_timeout=detect_timeout, token_file=token_file)
+    status = None if status_file is None else StatusWriter(status_file, outbox, version=__version__)
+    app = create_app(
+        outbox, job_timeout, detect_timeout=detect_timeout, token_file=token_file, status=status
+    )
     uvicorn.run(app, host=host, port=port, ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile)

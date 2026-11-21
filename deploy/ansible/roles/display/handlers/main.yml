@@ -1,0 +1,24 @@
+---
+# both listen to one notification and run in this order: new rules, then applied to a console
+# that already exists (none before the first reboot; the rule itself has nothing to do then)
+- name: Reload the udev rules
+  ansible.builtin.command:
+    argv: [udevadm, control, --reload]
+  changed_when: true
+  listen: Reload udev
+
+- name: Apply the udev rules to the consoles
+  ansible.builtin.command:
+    argv: [udevadm, trigger, --action=add, --subsystem-match=vtconsole]
+  changed_when: true
+  listen: Reload udev
+
+# notified by the unit and by the bench role's install, so the kiosk runs the new code;
+# a `--check` run on a host without the unit yet skips this instead of failing on an unknown service
+- name: Restart the display
+  ansible.builtin.systemd_service:
+    name: rustyfarian-bench-display
+    daemon_reload: true
+    state: restarted
+  # undefined when a failed bench task forces the handlers before this role ran
+  when: display_unit_file is defined and (display_unit_file.stat.exists or not ansible_check_mode)

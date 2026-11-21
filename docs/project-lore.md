@@ -125,3 +125,24 @@ Fix: give every registered field in `fail_msg` the same `default(...)` as in `th
 **A handler queued in a run that fails later never runs, and the next run never queues it again.**
 The first Pi run wrote `/etc/locale.gen` and the sshd drop-in, then failed in the `bench` role before the handlers ran; later runs found both files in place and reported `ok`.
 Fix: `force_handlers = true` in `deploy/ansible/ansible.cfg`, and the locale is now checked against `locale -a` instead of a handler; found 2026-11-16.
+
+---
+
+## Bench Display
+
+**The Waveshare 3.5" (A) on a Pi 5 needs no Waveshare download: both variants of the stock `piscreen` overlay drive it, loaded at runtime with `dtoverlay piscreen,...`.**
+Waveshare's guide installs `fbcp`, which uses DispmanX and does not exist on the Pi 5; a white panel after a Lite install is only the backlight with no overlay in `config.txt`.
+`sudo dtoverlay piscreen,drm,speed=16000000` brings `/dev/fb0` up without a reboot and `dtoverlay -r piscreen` takes it down again, which is what `deploy/display-probe.sh` does.
+
+**`rotate=` on the `piscreen` overlay means something else per driver: fbtft starts at the overlay's 270 and is landscape at 90 and 270, the DRM driver starts at 0 and is landscape at 0 and 180.**
+The overlay sets `rotate = <270>` for fbtft and no `rotation` for DRM; the `rotate` parameter writes both, and the DRM driver swaps width and height at 90 and 270.
+Both showed the bench panel upside down at their defaults, and the first fix, 90 on the DRM variant, gave a 320x480 banner standing on its side.
+Fix: turn each driver's default by 180, DRM `rotate=180` and fbtft `rotate=90`; after a change, `virtual_size` must read `480,320`.
+
+**Headless, the SPI panel is framebuffer 0 and fbcon takes it: the login prompt lands on the panel and `consoleblank` blanks it after ten minutes.**
+With no HDMI monitor, vc4 registers no framebuffer, and fbcon binds only index 0 by default (`con2fb_map_boot`), which the panel then is.
+Fix: the display role's udev rule writes `0` to the fbcon `vtconsole` `bind` the moment it appears; `echo 1 > /sys/class/vtconsole/vtconN/bind` gives the console back.
+
+**A probe that keeps only the first letter of a free-text answer invents results: "white, blue, green, red" became "still white" (2026-11-20).**
+The wrong "DRM stays white" verdict reached the feature doc and this file before the saved `tee` log was read again.
+Fix: `deploy/display-probe.sh` accepts single letters only; keep the log and read it before recording a verdict.

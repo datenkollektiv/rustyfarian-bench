@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The bench host's Waveshare 3.5" panel shows "rustyfarian bench" and the installed version: a `display` role enables the stock `piscreen` overlay, releases the kernel console from the panel and runs a small Pillow banner service, which says "good-bye" when stopped at shutdown; `just display-smoke` renders the banner and the farewell on the controller.
+- `deploy/display-probe.sh` identifies an SPI panel on the running Pi without a reboot: it loads an overlay at runtime, paints colour bars and unloads it again.
+- `serve --status-file PATH` keeps a world-readable JSON status file (schema 1) for the kiosk panel: state, queue length, the running job's board, example, start and step, and the last 5 verdicts, rewritten on every job change and every 10 s; it never holds a job id, a submitter or log text, and it is off by default.
+- `just pi-provision-dev` tests unreleased code on the bench host: it builds a wheel of the checkout under its `.devN` version, and the `bench` role copies and installs it instead of a release tag (`bench_wheel`).
+- `rustyfarian-bench kiosk` (needs the new `rustyfarian-bench[kiosk]` extra, Pillow) draws that status file on the SPI panel's framebuffer once a second, writes a frame only when the screen changes and says "good-bye" on SIGTERM; `--once` and `--png-dir` render it without a panel.
+
+### Changed
+
+- The bench host installs `rustyfarian-bench` v0.7.0 by default (`bench_version`).
+- The bench host's panel shows the queue instead of the static banner: the running job with its board, example, elapsed time and step bar, the idle screen with version and address, and the last 5 verdicts; a stale heartbeat or a stopped `serve` shows as such.
+- The `display` role runs `rustyfarian-bench kiosk` from the bench's install, which now includes the `kiosk` extra; the serve unit gets `RuntimeDirectory=rustyfarian-bench` for the status file; the role refuses a `bench_version` below v0.8.0.
+- `just display-smoke` installs the package with the `kiosk` extra and renders status fixtures (idle, running, queued, long names, stale, stopped, maintenance) instead of the banner script.
+
+### Removed
+
+- The `display` role's banner script `/usr/local/bin/rustyfarian-bench-display` and the apt package `python3-pil`; the role removes both from a provisioned Pi.
+
 ## [0.7.0] - 2026-11-20
 
 ### Added

@@ -1,0 +1,6 @@
+# Installed by deploy/ansible/roles/display. Headless, the SPI panel is framebuffer 0, so the kernel
+# console takes it at boot and blanks it after ten minutes. Release the console the moment fbcon
+# binds; the sysfs write waits for the console lock, so it lands after the takeover. fbcon holds
+# one console, so an HDMI monitor, if one were ever attached, loses the login prompt too.
+# Undo by hand: echo 1 > /sys/class/vtconsole/vtconN/bind
+SUBSYSTEM=="vtconsole", ACTION=="add", ATTR{name}=="*frame buffer*", ATTR{bind}=="1", ATTR{bind}="0"
