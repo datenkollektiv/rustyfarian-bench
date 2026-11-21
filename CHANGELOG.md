@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-21
+
 ### Added
 
 - The bench host's Waveshare 3.5" panel shows "rustyfarian bench" and the installed version: a `display` role enables the stock `piscreen` overlay, releases the kernel console from the panel and runs a small Pillow banner service, which says "good-bye" when stopped at shutdown; `just display-smoke` renders the banner and the farewell on the controller.
@@ -19,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- The bench host installs `rustyfarian-bench` v0.7.0 by default (`bench_version`).
+- The bench host installs `rustyfarian-bench` v0.8.0 by default (`bench_version`).
 - The bench host's panel shows the queue instead of the static banner: the running job with its board, example, elapsed time and step bar, the idle screen with version and address, and the last 5 verdicts; a stale heartbeat or a stopped `serve` shows as such.
 - The `display` role runs `rustyfarian-bench kiosk` from the bench's install, which now includes the `kiosk` extra; the serve unit gets `RuntimeDirectory=rustyfarian-bench` for the status file; the role refuses a `bench_version` below v0.8.0.
 - `just display-smoke` installs the package with the `kiosk` extra and renders status fixtures (idle, running, queued, long names, stale, stopped, maintenance) instead of the banner script.
