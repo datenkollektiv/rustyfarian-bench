@@ -7,7 +7,7 @@ set -euo pipefail
 # the panel the way the kiosk does (/sys/class/input/event*/device/name), shows the node's owner and
 # mode and the udev rules that set them, tries an open as the kiosk's user, then reads two windows
 # of events, draining once a second as the kiosk does: 5 s untouched, 10 s of taps. It prints counts
-# only; docs/features/bench-kiosk-sleep-v1.md says what to expect. Run it as the admin user: reading the node and opening it as
+# only; docs/features/archive/bench-kiosk-sleep-v1.md says what to expect. Run it as the admin user: reading the node and opening it as
 # the kiosk's user go through `sudo -n` where needed, and are skipped when sudo asks for a password
 # (run `sudo -v` first). It writes nothing; the log is wherever the tee above puts it.
 # For a dry run elsewhere, SYSFS_INPUT, DEV_DIR, TOUCH_NAME and KIOSK_USER override /sys/class/input,
