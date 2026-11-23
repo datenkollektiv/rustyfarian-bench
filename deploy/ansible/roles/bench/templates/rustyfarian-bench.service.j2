@@ -20,6 +20,9 @@ ExecStart=/usr/local/bin/rustyfarian-bench serve \
     --job-timeout {{ bench_job_timeout }} --detect-timeout {{ bench_detect_timeout }} \
     --token-file {{ bench_etc }}/tokens.toml \
     --ssl-certfile {{ bench_etc }}/cert.pem --ssl-keyfile {{ bench_etc }}/key.pem \
+{% if bench_parts | bool %}
+    --parts {{ bench_etc }}/parts.toml \
+{% endif %}
     --status-file /run/rustyfarian-bench/status.json
 # the display reads the status file there; systemd removes the directory when serve stops
 RuntimeDirectory=rustyfarian-bench

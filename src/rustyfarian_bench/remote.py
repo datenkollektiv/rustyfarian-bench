@@ -454,11 +454,18 @@ def recover(outbox: Path) -> None:
                 _finish(job_dir, job, "error", RESTARTED, None)
 
 
+# A task for the worker that is not a job: it gets the `on_proc` hook (so `stop` can end the
+# child it spawns) and runs without the observer, so it never shows up as a job.
+OnProc = Callable[["subprocess.Popen[bytes] | None"], None]
+Call = Callable[[OnProc], None]
+
+
 class Worker:
     """One thread running jobs in order: a board must not be probed while another job flashes it.
 
     `runner(job_dir)` runs one job; the default is `run_job`, whose child process the worker
     keeps track of so `stop` can end it. A runner that raises never stops the worker.
+    `submit_call` queues a plain callable in the same order; the observer never hears of it.
     `observer(event, job_dir)` hears `"start"` and `"end"` of each job; it never affects the job.
     """
 
@@ -476,7 +483,7 @@ class Worker:
         self._timeout = timeout
         self._argv = argv
         self._detect_timeout = detect_timeout
-        self._queue: queue.Queue[Path | None] = queue.Queue()
+        self._queue: queue.Queue[Path | Call | None] = queue.Queue()
         self._thread = threading.Thread(target=self._loop, name="bench-worker", daemon=True)
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[bytes] | None = None
@@ -487,6 +494,10 @@ class Worker:
 
     def submit(self, job_dir: Path) -> None:
         self._queue.put(job_dir)
+
+    def submit_call(self, call: Call) -> None:
+        """Queue `call(on_proc)` behind the jobs already queued; it is not a job."""
+        self._queue.put(call)
 
     def stop(self, wait: float = 10.0) -> None:
         """End the running child's process group and the thread; queued jobs stay queued."""
@@ -516,9 +527,14 @@ class Worker:
             probe_lines.end_group(proc)
 
     def _loop(self) -> None:
-        while (job_dir := self._queue.get()) is not None:
+        while (item := self._queue.get()) is not None:
             if self._stopping:
                 break
+            if not isinstance(item, Path):
+                with contextlib.suppress(Exception):  # a call never stops the worker
+                    item(self._track)
+                continue
+            job_dir = item
             self._observe("start", job_dir)
             try:
                 self._runner(job_dir)

@@ -424,6 +424,7 @@ rustyfarian-bench serve --host 0.0.0.0 --port 8443 --outbox /srv/bench/outbox \
 - `--job-timeout` (default 600 s) ends a job that runs too long.
 - `--detect-timeout` (default 30 s) fails a job whose board is not attached in that time, so the worker is free for the next job.
 - `--status-file PATH` keeps a status file for the [kiosk panel](#the-kiosk-panel); without it, `serve` keeps none.
+- `--parts PATH` names the boards in the [board list](#listing-the-boards) by base MAC; without it, the list carries no names.
 - How clients may reach it is under [Tokens and TLS](#tokens-and-tls).
 - From a checkout, `just serve` runs it with the outbox in `tmp/outbox`, and `just submit <repo> <board> <example> --bench http://127.0.0.1:8000` sends it a sibling repo's check.
 
@@ -446,6 +447,37 @@ rustyfarian-bench --repo . submit s3 hal_s3_b3f --wait
 - That is 0 on `pass`, 3 on `unverified` or `incomplete`, and 1 on any other verdict.
 - An unreachable host exits 2; Ctrl-C while waiting exits 130 and leaves the job running.
 
+### Listing the boards
+
+```bash
+just boards                              # or: rustyfarian-bench boards
+just boards --probe                      # read every board's MAC and chip; resets the boards
+just boards --probe --port /dev/ttyUSB0  # only this port, as listed
+```
+
+- `boards` uses the same URL, token and CA variables as `submit`; `--json` prints the host's reply.
+- Each row shows the port, VID:PID and USB serial, and the chip, MAC and name only when the MAC is verified.
+- A MAC is verified by a native-USB serial, which is the MAC, or by a probe since the port appeared; a replug makes it unverified again.
+- The name comes from the host's `--parts` file; a verified MAC that is not listed there has none.
+- **A probe resets the board**: `espflash board-info` restarts a running app.
+- A probe queues behind running and queued jobs, one port at a time; the client polls until it is done.
+- A port probed in the last 30 s answers from that result without a second reset.
+- A failed probe exits 1; an unreachable host exits 2.
+
+#### The parts file
+
+```toml
+# deploy/ansible/parts.toml on the controller (gitignored), /etc/rustyfarian-bench/parts.toml on the host
+[[parts]]
+name = "bench-esp32c3-example"   # [A-Za-z0-9_-], at most 80 characters, unique
+mac = "02:00:00:00:00:01"        # the base MAC as espflash board-info prints it, unique
+barcode = true                   # read by the label printer; the bench ignores it
+```
+
+- `serve` refuses to start with a bad file, and reads it again on every board list, so a renamed board needs no restart.
+- A file that breaks while `serve` runs makes the board list answer 503; jobs are not affected.
+- `deploy/ansible/parts.example.toml` shows the format with made-up MACs.
+
 ### The image
 
 - The image is the whole flash from `0x0`: bootloader, partition table and app.
@@ -456,6 +488,7 @@ rustyfarian-bench --repo . submit s3 hal_s3_b3f --wait
 ### Inside a job
 
 - One worker runs the jobs of the whole host one at a time, in arrival order, so a probe can never touch a board mid-flash.
+- Board probes share that worker; they never show up in the kiosk's verdict history, and the panel shows idle while one runs.
 - Each job runs the unchanged `run <example> --unattended --no-build --no-twins --detect-timeout N --unique-board` as a child process, in a repo the server writes itself.
 - The flash is `espflash write-bin` of the image at `0x0`, so nothing from the client's `bench.toml` runs on the host except the scenario's steps.
 - The board is found by chip detection; a `mac` from the client's `bench.toml` (never from `bench.local.toml`) is pinned in the job's repo.
@@ -549,6 +582,7 @@ ci = "..."
 - Keep each token dedicated to this bench, and revoke it at once if it may have leaked.
 - A request without a valid token is 401 before any of its body is read; `GET /jobs/<id>` needs one too.
 - Any valid token submits jobs and reads every job: `submitter` records the token's name (never the token) for attribution, not access control.
+- Any valid token also reads the board list, MACs and USB serials included, and may probe, which resets the boards.
 
 #### The client side
 

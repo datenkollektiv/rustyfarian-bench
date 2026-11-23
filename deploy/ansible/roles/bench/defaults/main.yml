@@ -4,6 +4,10 @@ bench_version: v0.8.0
 # the first release whose `serve` has `--status-file`, which the unit passes; an older
 # bench_version fails the play before the install or the unit changes
 bench_status_file_since: "0.8.0"
+# the bench's own board catalogue on the controller, gitignored (parts.example.toml shows the
+# format); when it exists the unit passes `--parts`, which needs bench_version v0.9.0 or later
+bench_parts_src: "{{ playbook_dir }}/parts.toml"
+bench_parts_since: "0.9.0"
 # a wheel on the controller, installed instead of the tag to test unreleased code; `just
 # pi-provision-dev` builds it and sets bench_version to its vX.Y.Z.devN version
 bench_wheel: ""

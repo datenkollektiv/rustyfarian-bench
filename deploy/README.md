@@ -67,7 +67,7 @@ deploy/
   doctor.sh                     # `just doctor`: every prerequisite, with a fix hint
   lint.sh                       # `just deploy-lint`
   sops.example.yaml             # template for the repo root's .sops.yaml (gitignored)
-  bench-client.sh               # `just pi-check` and `just pi-submit`: URL, CA and token for the live bench
+  bench-client.sh               # `just pi-check`, `just pi-submit` and `just pi-boards`: URL, CA and token for the live bench
   display-probe.sh              # run on the Pi: which SPI panel is it? loads an overlay at runtime, no reboot
   touch-probe.sh                # run on the Pi: does the touch panel report taps? read-only, the kiosk keeps running
   cloud-init/
@@ -78,6 +78,7 @@ deploy/
     ansible.cfg
     requirements.yml            # community.crypto, community.sops, pinned
     inventory.example.yml       # copy to inventory.yml (gitignored)
+    parts.example.toml          # copy to parts.toml (gitignored): the bench's board catalogue
     group_vars/all.yml          # bench port, where bench.yaml lives
     seed.yml                    # controller: renders cloud-init onto the boot partition
     ca-init.yml                 # controller: creates the CA into shared-secrets/bench.yaml
@@ -241,6 +242,8 @@ Then point Ansible at the Pi and run it:
 ```bash
 cp deploy/ansible/inventory.example.yml deploy/ansible/inventory.yml   # once; gitignored
 $EDITOR deploy/ansible/inventory.yml                                    # host, user, bench_fqdn, LAN CIDR
+cp deploy/ansible/parts.example.toml deploy/ansible/parts.toml         # optional; gitignored
+$EDITOR deploy/ansible/parts.toml                                       # your boards' names and base MACs
 just pi-upgrade
 ```
 
@@ -294,6 +297,7 @@ Compiling espflash on the Pi would need a Rust toolchain and many minutes; the p
 - `rustyfarian-bench[serve,kiosk]` installed with `uv tool install` from the git tag in `bench_version`, root-owned under `/opt/rustyfarian-bench`, so the service cannot rewrite its own code;
 - the `kiosk` extra (Pillow) in that install, for the `display` role;
 - `/etc/rustyfarian-bench/` with `cert.pem`, `key.pem` and `tokens.toml`, the last rendered from `bench_tokens` with `no_log`, all owned `root:bench`, mode `0640`;
+- `parts.toml` there too, `root:bench` `0640`, when the controller has `deploy/ansible/parts.toml`; the bench's own loader checks it before it replaces the old one;
 - a systemd unit running:
 
 ```bash
@@ -303,8 +307,11 @@ rustyfarian-bench serve --host 0.0.0.0 --port 8443 \
     --token-file /etc/rustyfarian-bench/tokens.toml \
     --ssl-certfile /etc/rustyfarian-bench/cert.pem \
     --ssl-keyfile /etc/rustyfarian-bench/key.pem \
+    --parts /etc/rustyfarian-bench/parts.toml \
     --status-file /run/rustyfarian-bench/status.json
 ```
+
+`--parts` is there only with a parts file, and needs `bench_version` v0.9.0 or later (`bench_parts_since`).
 
 The unit's choices, and why:
 
@@ -323,6 +330,8 @@ The unit's choices, and why:
 
 `serve` sets `ESPFLASH_SKIP_UPDATE_CHECK=true` for espflash itself, so the unit does not.
 `serve` re-reads the token file on every request, so changing tokens never restarts the service.
+`serve` re-reads the parts file on every board list, so renaming a board never restarts it either; adding or removing the file changes the unit, which does.
+A removed parts file leaves the Pi only after `serve` restarted without `--parts`, so after a refused restart the old `serve` still finds it.
 The status file is world-readable (`0644`), so it holds only what the panel draws: state, queue length, the running job's board, example, start and step, and the last 5 verdicts.
 It never holds a job id, a submitter, a check, a detail or log text.
 `serve` rewrites it on every job change and every 10 s as a heartbeat.
@@ -335,7 +344,7 @@ The play refuses four changes while any job's `job.json` is not `done`, unless `
 - a bumped `espflash`, which every flash calls (`uv` is guarded with it).
 
 The jobs are read before the first role runs and each refusal comes before its change, so a refused run leaves the Python, the tools, the bench code and `serve` itself as the job found them.
-Base packages, firewall, sshd and the token file are still brought up to date.
+Base packages, firewall, sshd, the token file and the parts file are still brought up to date.
 A refused restart is remembered in `/etc/rustyfarian-bench/restart-pending`, so the next run retries it once the jobs are done, even when nothing else changed.
 Two gaps stay open until `serve` gets a maintenance mode (see the roadmap):
 
@@ -408,6 +417,16 @@ A client without this checkout, such as a devcontainer, sets `RUSTYFARIAN_BENCH_
 
 A verdict coming back is the gate: a job travelled from the laptop to the Pi, through `espflash` to a board and back as a judged result.
 
+List the boards the same way:
+
+```bash
+just pi-boards            # every attached port; names only for verified MACs
+just pi-boards --probe    # reads each board's MAC and chip with espflash board-info
+```
+
+**A probe resets the board**, so a running app restarts; it waits behind any running or queued job.
+The names come from `deploy/ansible/parts.toml` as installed on the Pi.
+
 ## Day 2
 
 | Task                    | How                                                                  |
@@ -420,6 +439,8 @@ A verdict coming back is the gate: a job travelled from the laptop to the Pi, th
 | Check for drift         | `just pi-provision --check --diff` previews; `just pi-idempotent` applies twice |
 | Upgrade espflash or uv  | bump version and sha256 in `roles/tools/defaults`, `just pi-provision` |
 | Add or revoke a token   | `just secrets-edit bench.yaml`, `just pi-provision`; no restart      |
+| Name a board            | add it to `deploy/ansible/parts.toml`, `just pi-provision`; no restart |
+| List the boards         | `just pi-boards`; `--probe` reads the MACs and resets the boards      |
 | Change the Wi-Fi        | `just secrets-edit pi.env`, `just pi-provision`, over Ethernet        |
 | Add a person to SOPS    | their age key in `.sops.yaml`, `just secrets-updatekeys`             |
 | Rebuild the Pi          | Steps 1–4 again; the CA and tokens survive in `shared-secrets/`      |
@@ -448,6 +469,7 @@ Change the Wi-Fi over Ethernet: the link changes mid-run.
 | `ansible-core` through `uvx`                     | a global Ansible install            | the version is pinned by the repo, not by the laptop           |
 | `rustyfarian-bench` from a release tag           | a commit SHA, a copied wheel        | the Pi runs released code; upgrading is one variable           |
 | stock `piscreen` overlay, DRM variant            | the fbtft variant, Waveshare's dtbo | both drive the panel; DRM is mainline and a KMS device for a later compositor |
+| bench-owned `deploy/ansible/parts.toml`, gitignored | `shared-secrets/`, a committed file | `secrets-check` accepts only SOPS formats; a public repo publishes no MACs |
 
 ## What comes next
 

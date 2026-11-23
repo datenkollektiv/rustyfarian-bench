@@ -8,7 +8,7 @@ single process: the queue lives in memory.
 import base64
 import binascii
 import hmac
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import __version__, remote
+from . import __version__, boards, remote
 from .config import ConfigError
 from .status import StatusWriter
 
@@ -49,6 +49,10 @@ class SubmitRequest(BaseModel):
 def _body_budget() -> int:
     # base64 image plus a scenario that JSON may escape up to six-fold (`\\u00XX`), plus the rest.
     return MAX_IMAGE * 4 // 3 + MAX_SCENARIO * 6 + 4096
+
+
+class ProbeRequest(BaseModel):
+    ports: list[str] | None = Field(default=None, max_length=64)  # None: every listed port
 
 
 class _TooLarge(BaseException):  # not Exception: FastAPI would turn that into a 400
@@ -173,11 +177,16 @@ def create_app(
     detect_timeout: float | None = remote.DETECT_TIMEOUT,
     token_file: Path | None = None,
     status: StatusWriter | None = None,
+    parts_file: Path | None = None,
+    lister: Callable[[], list[boards.PortInfo]] | None = None,
+    probe_argv: Sequence[str] | None = None,
 ) -> FastAPI:
     """The app; `runner` replaces the child-process job runner (for tests).
 
     With `token_file`, every request needs a bearer token from that file; without, the app is
     open, which is only for loopback. With `status`, the kiosk status file follows the worker.
+    With `parts_file`, `GET /boards` names the boards it lists. `lister` and `probe_argv` replace
+    the port listing and the probe child's command (for tests).
     """
     outbox = outbox.resolve()
     worker = remote.Worker(
@@ -186,6 +195,8 @@ def create_app(
         detect_timeout=detect_timeout,
         observer=None if status is None else status.observe,
     )
+
+    registry = boards.BoardRegistry(lister, parts_file, probe_argv=probe_argv)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -198,6 +209,7 @@ def create_app(
             yield
         finally:
             worker.stop()  # ends a running child, so no flashing goes on after shutdown
+            registry.fail_pending("server stopped")
             if status is not None:
                 status.stop()
 
@@ -235,6 +247,37 @@ def create_app(
         log, end = _read_log(job_dir, offset, job.status == remote.DONE)
         return {"job": asdict(job), "offset": end, "log": log}
 
+    @app.get("/boards")
+    def get_boards() -> dict[str, Any]:
+        try:
+            return registry.snapshot()
+        except ConfigError:  # the reply must not reveal where the file lives
+            raise HTTPException(503, "the parts file cannot be read") from None
+
+    @app.post("/boards/probe", status_code=202)
+    def post_probe(req: ProbeRequest | None = None) -> dict[str, Any]:
+        try:
+            registry.parts()  # a parts file that broke fails the board routes alike
+            probe = registry.request_probe(None if req is None else req.ports, worker.submit_call)
+        except boards.UnknownPort as e:
+            raise HTTPException(422, str(e)) from None
+        except ConfigError:
+            raise HTTPException(503, "the parts file cannot be read") from None
+        return {
+            "id": probe.id,
+            "state": probe.state,
+            "ports": [r.port for r in probe.results],
+            "reset": probe.reset,
+            "note": boards.NOTE,
+        }
+
+    @app.get("/boards/probe/{probe_id}")
+    def get_probe(probe_id: str) -> dict[str, Any]:
+        probe = registry.get_probe(probe_id)
+        if probe is None:
+            raise HTTPException(404, "no such probe")
+        return probe
+
     return app
 
 
@@ -248,14 +291,18 @@ def serve(
     ssl_certfile: Path | None = None,
     ssl_keyfile: Path | None = None,
     status_file: Path | None = None,
+    parts_file: Path | None = None,
 ) -> None:
     """Run the server in this process until it is stopped.
 
     Off loopback the bench must be closed: `token_file` and both TLS files are required there,
-    and a ConfigError says which is missing. The token file must load before anything listens.
+    and a ConfigError says which is missing. The token file and the parts file must load before
+    anything listens; the parts file is read again on every board list.
     """
     if token_file is not None:
         remote.load_tokens(token_file)
+    if parts_file is not None:
+        boards.load_parts(parts_file)
     if (ssl_certfile is None) != (ssl_keyfile is None):
         missing = "--ssl-keyfile" if ssl_keyfile is None else "--ssl-certfile"
         raise ConfigError(f"TLS needs both files: {missing} is missing")
@@ -272,6 +319,11 @@ def serve(
             raise ConfigError(f"{flag} {path}: no such file")
     status = None if status_file is None else StatusWriter(status_file, outbox, version=__version__)
     app = create_app(
-        outbox, job_timeout, detect_timeout=detect_timeout, token_file=token_file, status=status
+        outbox,
+        job_timeout,
+        detect_timeout=detect_timeout,
+        token_file=token_file,
+        status=status,
+        parts_file=parts_file,
     )
     uvicorn.run(app, host=host, port=port, ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile)

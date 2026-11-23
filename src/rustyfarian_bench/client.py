@@ -10,6 +10,7 @@ import base64
 import http.client
 import json
 import os
+import re
 import ssl
 import sys
 import tempfile
@@ -165,16 +166,22 @@ def cmd_submit(args: argparse.Namespace) -> int:
         return 130
 
 
-def _submit(args: argparse.Namespace) -> int:
-    base = args.bench.rstrip("/")
+def _base_url(raw: str) -> str:
+    """`--bench` without a trailing slash; refuses a non-URL and a token over plain http."""
+    base = raw.rstrip("/")
     if not base.startswith(("http://", "https://")):
-        raise ConfigError(f"--bench {args.bench!r}: expected an http:// or https:// URL")
+        raise ConfigError(f"--bench {raw!r}: expected an http:// or https:// URL")
     host = urlsplit(base).hostname or ""
     if _token() and base.startswith("http://") and not remote.loopback(host):
         raise ConfigError(
             f"--bench {base}: a token travels only over https:// (or to loopback through a "
             f"tunnel); unset ${TOKEN_ENV} for an open bench"
         )
+    return base
+
+
+def _submit(args: argparse.Namespace) -> int:
+    base = _base_url(args.bench)
     cfg = config.load(args.repo)
     scenario = _select(cfg, args.board, args.example, args.check)
     if reasons := remote.remote_violations(scenario):
@@ -220,3 +227,104 @@ def _submit(args: argparse.Namespace) -> int:
         print()
         ui.warn(f"stopped waiting; job {job_id} keeps running on the bench host")
         return 130
+
+
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _safe(value: object) -> str:
+    """Text for a terminal: control characters from the host's reply become `?`."""
+    return _UNSAFE.sub("?", str(value))
+
+
+def cmd_boards(args: argparse.Namespace) -> int:
+    try:
+        return _boards(args)
+    except RemoteError as e:
+        ui.warn(_safe(e))
+        return 2
+    except KeyboardInterrupt:
+        print()
+        ui.warn("aborted; a probe already queued keeps running on the bench host")
+        return 130
+
+
+def _boards(args: argparse.Namespace) -> int:
+    base = _base_url(args.bench)
+    if args.port and not args.probe:
+        raise ConfigError("--port names a port to probe: add --probe")
+    probe: dict[str, Any] | None = None
+    if args.probe:
+        if args.json:
+            print("probing resets the boards", file=sys.stderr)
+        else:
+            ui.warn(
+                "probing resets each board: a running app restarts, "
+                "and the probe waits behind any running job"
+            )
+        probe = _probe(base, args.port or None)
+    reply = _request(f"{base}/boards", None, GET_TIMEOUT)
+    if not isinstance(reply.get("boards"), list):
+        raise RemoteError(f"{base}/boards: unexpected reply")
+    failed = probe is not None and any(r["error"] for r in probe["results"])
+    if args.json:
+        print(json.dumps({**reply, "probe": probe} if probe else reply, indent=2))
+    else:
+        for line in _render(reply):
+            print(line)
+        if probe:
+            for r in probe["results"]:
+                if r["error"]:
+                    ui.warn(f"{_safe(r['port'])}: {_safe(r['error'])}")
+        elif any(not b.get("verified") for b in reply["boards"]):
+            ui.info("unverified: run `boards --probe` to read the MAC (it resets the board)")
+    return 1 if failed else 0
+
+
+def _probe(base: str, ports: list[str] | None) -> dict[str, Any]:
+    """Queue a probe, poll it until every port is done; returns the final probe reply."""
+    body: dict[str, Any] = {"ports": ports} if ports else {}
+    queued = _request(f"{base}/boards/probe", body, POST_TIMEOUT)
+    probe_id = queued.get("id")
+    if not isinstance(probe_id, str):
+        raise RemoteError(f"{base}/boards/probe: unexpected reply")
+    url = f"{base}/boards/probe/{probe_id}"
+    while True:
+        reply = _request(url, None, GET_TIMEOUT)
+        results = reply.get("results")
+        if not isinstance(results, list) or not all(isinstance(r, dict) for r in results):
+            raise RemoteError(f"{url}: unexpected reply")
+        if reply.get("state") == "done":
+            for r in results:
+                r.setdefault("error", None)
+                r.setdefault("port", "?")
+            return reply
+        time.sleep(POLL_INTERVAL)
+
+
+def _render(reply: dict[str, Any]) -> list[str]:
+    """The board table; an empty cell is `-`, an unverified board shows no MAC, chip or name."""
+    rows: list[tuple[str, ...]] = [("PORT", "USB", "SERIAL", "CHIP", "MAC", "NAME", "SEEN")]
+    for b in reply["boards"]:
+        ok = bool(b.get("verified"))
+        seen = "unverified"
+        if ok:
+            seen = _safe(b.get("mac_source") or "-")
+            if b.get("verified_at"):
+                seen += f" {_safe(b['verified_at'])}"
+        cells = [
+            b.get("port"),
+            b.get("vid_pid"),
+            b.get("usb_serial"),
+            b.get("chip") if ok else None,
+            b.get("mac") if ok else None,
+            b.get("name") if ok else None,
+        ]
+        rows.append((*(_safe(c) if c else "-" for c in cells), seen))
+    if len(rows) == 1:
+        return ["no serial ports attached to the bench host"]
+    widths = [max(len(r[i]) for r in rows) for i in range(6)]
+    return [
+        "  ".join(c.ljust(w) for c, w in zip(r[:6], widths, strict=True)) + "  " + r[6]
+        for r in rows
+    ]

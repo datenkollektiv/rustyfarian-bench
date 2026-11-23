@@ -263,6 +263,7 @@ def test_serve_passes_the_token_file_and_the_tls_files_to_the_server(
         "token_file": Path("t.toml"),
         "ssl_certfile": Path("c.pem"),
         "ssl_keyfile": Path("k.pem"),
+        "parts_file": None,
     }
 
 
@@ -272,7 +273,21 @@ def test_serve_without_the_flags_passes_none_for_each(monkeypatch: pytest.Monkey
     assert cli.main(["serve"]) == 0
 
     [kw] = calls
-    assert kw == {"token_file": None, "ssl_certfile": None, "ssl_keyfile": None}
+    assert kw == {
+        "token_file": None,
+        "ssl_certfile": None,
+        "ssl_keyfile": None,
+        "parts_file": None,
+    }
+
+
+def test_serve_passes_the_parts_file_to_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _fake_serve(monkeypatch)
+
+    assert cli.main(["serve", "--parts", "etc/parts.toml"]) == 0
+
+    [kw] = calls
+    assert kw["parts_file"] == Path("etc/parts.toml")
 
 
 def test_serve_refusing_to_start_is_exit_2_with_the_reason(
@@ -561,3 +576,29 @@ def test_kiosk_once_builds_no_touch_reader(monkeypatch: pytest.MonkeyPatch) -> N
     [(_, kw)] = calls
     assert kw["touch"] is None
     assert readers == []
+
+
+def test_boards_requires_a_bench_url(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--repo", str(tmp_path), "boards"])
+    assert e.value.code == 2
+    assert "--bench URL is required" in capsys.readouterr().err
+
+
+def test_boards_takes_the_bench_url_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[argparse.Namespace] = []
+
+    def grab(args: argparse.Namespace) -> int:
+        seen.append(args)
+        return 0
+
+    monkeypatch.setattr(client, "cmd_boards", grab)
+    monkeypatch.setenv(client.URL_ENV, "http://env.test")
+    assert (
+        cli.main(["--repo", str(tmp_path), "boards", "--probe", "--port", "a", "--port", "b"]) == 0
+    )
+    assert seen[0].bench == "http://env.test"
+    assert seen[0].port == ["a", "b"]
+    assert seen[0].probe is True

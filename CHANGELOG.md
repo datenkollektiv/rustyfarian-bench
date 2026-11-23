@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `GET /boards` lists the serial ports attached to the bench host with by-id path, VID:PID and USB serial; chip, MAC and name appear only for a verified MAC, with its source and time.
+- `POST /boards/probe` reads the MAC and chip of all listed ports or the named ones with `espflash board-info`, queued behind jobs and polled through `GET /boards/probe/{id}`; the answer says the board was reset, and a port probed in the last 30 s is not reset again.
+- `serve --parts PATH` names the listed boards by base MAC from a `parts.toml` (`[[parts]]` with `name`, `mac`, `barcode`), read again on every board list.
+- `rustyfarian-bench boards [--probe] [--port P] [--json]` and `just boards` list the boards of a remote bench, with the same URL, token and CA handling as `submit`.
+- The `bench` role installs the gitignored `deploy/ansible/parts.toml` as `/etc/rustyfarian-bench/parts.toml`, checked by the bench's own loader, and passes `--parts`; `just pi-boards` lists the boards of the provisioned bench.
+
 ## [0.8.0] - 2026-11-21
 
 ### Added

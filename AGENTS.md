@@ -10,15 +10,17 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 
 ## Architecture
 
-- `cli.py` — `run`, `list`, `detect`, `submit`, `serve` subcommands (entry point `rustyfarian-bench`).
+- `cli.py` — `run`, `list`, `detect`, `submit`, `boards`, `serve` subcommands (entry point `rustyfarian-bench`).
 - `config.py` — loads `bench/bench.toml`, the optional git-ignored `bench/bench.local.toml` (per-machine `mac`, `usb_id`, `usb_serial`, `baud`) and `bench/<board>/*.toml` scenarios.
 - `device.py` — polls serial ports and asks `espflash board-info` which chip answers.
 - `serial_lines.py` — background pyserial reader that reopens the port across USB re-enumeration.
 - `steps.py` — judges `expect` / `duration` / `confirm` steps against the line stream.
 - `runner.py` — one session: build, find board, flash, reset, guide steps, append to `results.jsonl`.
-- `remote.py` — stdlib-only core of the remote bench: job files in `outbox/<id>/`, the refusal boundary, the child-process runner and the single worker.
-- `server.py` — FastAPI app and `serve()` over `remote.py`; imported only with the `serve` extra.
-- `client.py` — `submit`: builds the image, uploads it with the scenario over `urllib` and polls for the verdict.
+- `remote.py` — stdlib-only core of the remote bench: job files in `outbox/<id>/`, the refusal boundary, the child-process runner and the single worker, which also runs board probes.
+- `boards.py` — stdlib-only board list: attached ports, the `parts.toml` loader, verified MACs and the probe registry (per-port dedupe, 30 s cooldown).
+- `probe_port.py` — `python -m` entry a probe runs as a child: `espflash board-info` on one port, one JSON line out.
+- `server.py` — FastAPI app and `serve()` over `remote.py`: `/jobs`, `GET /boards`, `POST /boards/probe` and `GET /boards/probe/{id}`; imported only with the `serve` extra.
+- `client.py` — `submit`: builds the image, uploads it with the scenario over `urllib` and polls for the verdict; `boards` lists and probes the host's boards.
 
 ## Development Workflow
 
@@ -56,5 +58,5 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 
 - `README.md` — session flow, consumer layout, step kinds and modifiers.
 - `justfile` and `pyproject.toml` — the gate and the tool configuration.
-- `deploy/README.md` — the Raspberry Pi bench host from a blank SD card: cloud-init seed, Ansible, SOPS secrets in the gitignored `shared-secrets/`.
+- `deploy/README.md` — the Raspberry Pi bench host from a blank SD card: cloud-init seed, Ansible, SOPS secrets in the gitignored `shared-secrets/`, the board catalogue in the gitignored `deploy/ansible/parts.toml`.
 - `docs/project-lore.md` — point-in-time debugging discoveries; verify entries against current code before acting on them.

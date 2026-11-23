@@ -50,6 +50,20 @@
       v{{ bench_status_file_since }} or later, not {{ bench_version }}
     quiet: true
 
+# read once, so the install, the unit and the removal below all see the same answer
+- name: Look for the parts file on the controller
+  ansible.builtin.set_fact:
+    bench_parts: "{{ bench_parts_src is file }}"
+
+- name: Check that bench_version has the parts file
+  ansible.builtin.assert:
+    that: bench_version[1:] is version(bench_parts_since, '>=')
+    fail_msg: >-
+      {{ bench_parts_src }} exists, so the bench unit runs `rustyfarian-bench serve --parts`,
+      which needs bench_version v{{ bench_parts_since }} or later, not {{ bench_version }}
+    quiet: true
+  when: bench_parts | bool
+
 # --- user and directories ---
 
 - name: Create the bench group
@@ -254,6 +268,22 @@
     mode: "0640"
   no_log: true
 
+# Checked by the installed bench's own loader, so a bad file never replaces the good one and
+# `serve` never meets one at start. `serve` re-reads it on every board list, so a change needs
+# no restart; only adding or removing it changes the unit.
+- name: Install the parts file
+  ansible.builtin.copy:
+    src: "{{ bench_parts_src }}"
+    dest: "{{ bench_etc }}/parts.toml"
+    owner: root
+    group: bench
+    mode: "0640"
+    validate: >-
+      {{ bench_tool_dir }}/tools/rustyfarian-bench/bin/python -I -c
+      'import pathlib, sys; from rustyfarian_bench import boards; boards.load_parts(pathlib.Path(sys.argv[1]))'
+      %s
+  when: bench_parts | bool
+
 # --- the service ---
 
 - name: Install the systemd unit
@@ -310,3 +340,11 @@
   ansible.builtin.file:
     path: "{{ bench_restart_marker }}"
     state: absent
+
+# only after serve restarted without `--parts`: a refused restart leaves the old serve running,
+# and it reads the file on every board list
+- name: Remove the parts file
+  ansible.builtin.file:
+    path: "{{ bench_etc }}/parts.toml"
+    state: absent
+  when: not bench_parts | bool

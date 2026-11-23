@@ -1152,3 +1152,73 @@ def test_without_an_observer_the_worker_behaves_as_before(tmp_path: Path) -> Non
 
     assert read(d).verdict == "pass"
     assert Worker()._observer is None
+
+
+# -- the worker's calls (not jobs) ---------------------------------------------------------------
+
+
+def test_a_call_runs_in_order_after_a_queued_job_and_the_observer_never_hears_of_it(
+    tmp_path: Path,
+) -> None:
+    order: list[str] = []
+    events: list[tuple[str, str]] = []
+
+    def fake(job_dir: Path) -> None:
+        order.append("job")
+        run_job(job_dir, 30, child())
+
+    worker = Worker(fake, observer=lambda event, d: events.append((event, d.name)))
+    job_dir = _queued(tmp_path)
+    worker.submit(job_dir)
+    worker.submit_call(lambda on_proc: order.append("call"))
+    worker.start()
+    try:
+        assert wait_until(lambda: order == ["job", "call"], 5.0)
+    finally:
+        worker.stop()
+
+    assert events == [("start", job_dir.name), ("end", job_dir.name)]
+
+
+def test_a_call_that_raises_does_not_stop_the_worker(tmp_path: Path) -> None:
+    ran: list[str] = []
+
+    def boom(on_proc: Callable[[subprocess.Popen[bytes] | None], None]) -> None:
+        raise RuntimeError("boom")
+
+    worker = Worker(lambda job_dir: ran.append(job_dir.name))
+    worker.start()
+    try:
+        worker.submit_call(boom)
+        job_dir = _queued(tmp_path)
+        worker.submit(job_dir)
+        assert wait_until(lambda: ran == [job_dir.name], 5.0)
+    finally:
+        worker.stop()
+
+
+def test_stopping_the_worker_ends_the_child_a_call_tracked() -> None:
+    code = "import os, time; print('pid', os.getpid(), flush=True); time.sleep(60)"
+    pids: list[int] = []
+    finished: list[bool] = []
+
+    def call(on_proc: Callable[[subprocess.Popen[bytes] | None], None]) -> None:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", code], stdout=subprocess.PIPE, start_new_session=True
+        )
+        on_proc(proc)
+        assert proc.stdout is not None
+        pids.append(int(proc.stdout.readline().split()[1]))
+        proc.wait()
+        on_proc(None)
+        finished.append(True)
+
+    worker = Worker()
+    worker.start()
+    worker.submit_call(call)
+    assert wait_until(lambda: bool(pids), 10.0)
+
+    worker.stop()
+
+    assert wait_until(lambda: bool(finished), 5.0)
+    assert not alive(pids[0]), "the call's child kept running after stop()"

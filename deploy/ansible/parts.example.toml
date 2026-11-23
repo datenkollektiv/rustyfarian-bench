@@ -1,0 +1,24 @@
+# parts.example.toml — the format of deploy/ansible/parts.toml, the bench's board catalogue.
+# Copy it to parts.toml, which is gitignored, and list your own boards there.
+# `just pi-provision` installs parts.toml as /etc/rustyfarian-bench/parts.toml for `serve --parts`.
+# The bench names an attached board by its verified base MAC.
+# name: unique, letters, digits, `_` and `-`, at most 80 characters.
+# A `bench-` prefix marks a board that lives on the bench.
+# mac: the eFuse base MAC as `espflash board-info` prints it, aa:bb:cc:dd:ee:ff, unique.
+# barcode: read by the label printer; the bench ignores it.
+# The MACs below are made up and locally administered, so they match no real board.
+
+[[parts]]
+name = "bench-esp32c3-example"
+mac = "02:00:00:00:00:01"
+barcode = true
+
+[[parts]]
+name = "bench-esp32-example"
+mac = "02:00:00:00:00:02"
+barcode = true
+
+[[parts]]
+name = "desk-esp32s3-example"
+mac = "02:00:00:00:00:03"
+barcode = true
