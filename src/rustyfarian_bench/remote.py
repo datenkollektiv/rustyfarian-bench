@@ -1,7 +1,8 @@
 """Remote bench, shared by `serve` and `submit`: job files, the refusal boundary and the runner.
 
 A job is a tiny consumer repo the server writes into `outbox/<id>/`: its own `bench/bench.toml`
-(flash = `espflash write-bin` of the uploaded `image.bin`) plus the uploaded scenario. The
+(flash = `python -m rustyfarian_bench.flash_image`, which writes the uploaded `image.bin` by its
+partition table, flat when it has none) plus the uploaded scenario. The
 unchanged `run` command then runs as a child process in that directory, its output going to
 `run.log`. Stdlib only: no web framework is imported here.
 """
@@ -21,12 +22,12 @@ import sys
 import threading
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import config, device, probe_lines
+from . import config, device, flash_image, probe_lines
 from .config import ConfigError, Scenario
 from .runner import steps_for
 
@@ -99,6 +100,8 @@ class Job:
     detail: str = ""
     exit_code: int | None = None
     submitter: str = ""  # the token's name; a default, so a job.json from before it still loads
+    # The flash plan fixed at submit (mode and ranges); defaulted so an older job.json loads.
+    flash: dict[str, Any] = field(default_factory=dict)
 
 
 def _now() -> str:
@@ -158,14 +161,16 @@ def _quoted(text: str) -> str:
 def bench_toml(board: Mapping[str, Any]) -> str:
     """The server-written `bench/bench.toml`; `board` holds key, chip, name, baud, reset, mac?."""
     chip = device.normalize_chip(board["chip"])
-    flash = ["espflash", "write-bin", "--non-interactive", "--chip", chip]
-    flash += ["--port", "{port}", "0x0", "image.bin"]
+    # The runner `.format`s every flash part, so braces in the interpreter path are doubled.
+    python = sys.executable.replace("{", "{{").replace("}", "}}")
+    flash = [python, "-m", "rustyfarian_bench.flash_image", "--chip", chip]
+    flash += ["--port", "{port}", "image.bin"]
     mac = board.get("mac")
     pin = f"mac = {_quoted(mac)}\n" if mac else ""
     return (
         "[commands]\n"
         'build = ["true"]\n'  # never run (the child gets --no-build); config.load requires it
-        f"flash = {json.dumps(flash)}\n"
+        f"flash = {json.dumps(flash, ensure_ascii=False)}\n"  # as `_quoted`: no surrogate pairs
         f"\n[boards.{board['key']}]\n"
         f"chip = {_quoted(chip)}\n"
         f"name = {_quoted(board['name'])}\n"
@@ -264,6 +269,7 @@ def create_job(
     example = _check_name(meta.get("example"), "example")
     if not image:
         raise ConfigError("image: is empty")
+    flash = flash_image.plan(image)  # before the directory exists: a bad table leaves nothing
     job = Job(
         id=new_job_id(),
         board=board["key"],
@@ -272,6 +278,7 @@ def create_job(
         example=example,
         created=_now(),
         submitter=submitter,
+        flash=flash_image.describe(flash),
     )
     job_dir = _make_job_dir(outbox, job)
     try:
