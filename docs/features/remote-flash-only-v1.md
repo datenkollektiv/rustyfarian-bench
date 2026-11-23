@@ -1,6 +1,6 @@
 ---
-gate: upstream
-gate-note: "Remote flash keeps NVS" stage 1 lands, so a flash-only job writes segments and keeps NVS
+gate: none
+gate-note: "Remote flash keeps NVS" stage 1 landed (2026-11-24), so a flash-only job writes segments through `flash_image` and keeps NVS
 desk-work: available
 ---
 

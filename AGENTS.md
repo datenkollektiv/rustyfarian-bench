@@ -19,6 +19,7 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 - `remote.py` — stdlib-only core of the remote bench: job files in `outbox/<id>/`, the refusal boundary, the child-process runner and the single worker, which also runs board probes.
 - `boards.py` — stdlib-only board list: attached ports, the `parts.toml` loader, verified MACs and the probe registry (per-port dedupe, 30 s cooldown).
 - `probe_port.py` — `python -m` entry a probe runs as a child: `espflash board-info` on one port, one JSON line out.
+- `flash_image.py` — stdlib-only `python -m` entry a job's flash runs: plans a merged image by its partition table (flat without one) and writes it with `espflash write-bin`/`erase-region`, keeping NVS.
 - `server.py` — FastAPI app and `serve()` over `remote.py`: `/jobs`, `GET /boards`, `POST /boards/probe` and `GET /boards/probe/{id}`; imported only with the `serve` extra.
 - `client.py` — `submit`: builds the image, uploads it with the scenario over `urllib` and polls for the verdict; `boards` lists and probes the host's boards.
 

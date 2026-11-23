@@ -401,7 +401,7 @@ sequenceDiagram
     S-->>C: the job, queued
     S->>W: queue it, one job at a time in arrival order
     W->>B: run the example unattended in a child process
-    Note over W,B: detect by chip, espflash write-bin at 0x0, run the steps
+    Note over W,B: detect by chip, write the image by its partition table, run the steps
     W->>S: verdict and exit code, kept in the outbox
     loop with --wait, once a second
         C->>S: GET /jobs/ID?offset=N
@@ -480,7 +480,7 @@ barcode = true                   # read by the label printer; the bench ignores 
 
 ### The image
 
-- The image is the whole flash from `0x0`: bootloader, partition table and app.
+- The image is the merged flash from `0x0`: bootloader, partition table at `0x8000` and app.
 - It must carry the consumer's own bootloader: the `image` command runs `espflash save-image --merge` with the same arguments as the consumer's `flash`, and so must an `--image PATH`.
 - An image merged from a bare ELF gets espflash's bundled bootloader, which may not boot.
 - On the rustyfarian consumers it does not: their flash passes a cached IDF v5.3.3 `--bootloader`, while espflash 4.x bundles a v5.5.1 one that fails with "efuse blk rev".
@@ -490,7 +490,13 @@ barcode = true                   # read by the label printer; the bench ignores 
 - One worker runs the jobs of the whole host one at a time, in arrival order, so a probe can never touch a board mid-flash.
 - Board probes share that worker; they never show up in the kiosk's verdict history, and the panel shows idle while one runs.
 - Each job runs the unchanged `run <example> --unattended --no-build --no-twins --detect-timeout N --unique-board` as a child process, in a repo the server writes itself.
-- The flash is `espflash write-bin` of the image at `0x0`, so nothing from the client's `bench.toml` runs on the host except the scenario's steps.
+- The flash writes the image by its partition table, so nothing from the client's `bench.toml` runs on the host except the scenario's steps:
+  - `espflash write-bin` of `0x0`–`0x9000` (bootloader and table) and of every `app` partition, without its trailing `0xFF`;
+  - `espflash erase-region` of `otadata`, so the flashed slot boots;
+  - every other `data` partition is left alone, so NVS and `phy_init` survive the job.
+- An image without a partition table at `0x8000` is written whole from `0x0`, as before; that erases NVS.
+- A malformed table is refused with 422.
+- The job's `flash` field records the mode (`segments` or `flat`) and the ranges written or erased.
 - The board is found by chip detection; a `mac` from the client's `bench.toml` (never from `bench.local.toml`) is pinned in the job's repo.
 - A malformed `mac` fails loading before `submit` builds, and `serve` answers 422.
 - An unpinned job refuses to guess: two boards of the chip end it as `error` naming both ports, and a silent stray port blocks it until `--detect-timeout`.
@@ -515,7 +521,7 @@ Every job is kept in `outbox/<id>/`, the id being `YYYYmmdd-HHMMSS-<hex>` in UTC
 
 ```
 outbox/20261112-093000-a1b2c3/
-├── job.json       status, board, example, verdict, detail, exit code
+├── job.json       status, board, example, verdict, detail, exit code, flash ranges
 ├── image.bin      the uploaded image
 ├── scenario.toml  the uploaded scenario
 ├── bench/         the repo the child ran in, with logs/ and results.jsonl
@@ -526,6 +532,7 @@ outbox/20261112-093000-a1b2c3/
 - `outbox/` is kept forever, and an image can hold Wi-Fi credentials, so clear the outbox yourself.
 - `GET /jobs/<id>?offset=N` returns the job and the log from byte `N`.
 - `POST /jobs` takes a JSON body with the scenario and the base64 image, and answers with the job, `submitter` included.
+- A job's `flash` is `{"mode": "segments" | "flat", "ops": [{"kind": "write" | "erase", "offset", "size", "label"}]}`, offsets and sizes as hex strings, fixed when the job is queued.
 
 ### The kiosk panel
 

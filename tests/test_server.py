@@ -17,12 +17,12 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 
-from rustyfarian_bench import remote, server
+from rustyfarian_bench import flash_image, remote, server
 from rustyfarian_bench.boards import PortInfo
 from rustyfarian_bench.config import ConfigError
 from rustyfarian_bench.status import StatusWriter
 
-from .fakes import wait_until
+from .fakes import FACTORY, NVS, make_image, table_bytes, wait_until
 from .test_remote import (
     IMAGE,
     JOB_ID,
@@ -128,6 +128,35 @@ def test_an_unsafe_upload_is_422_and_leaves_nothing(
 
     assert reply.status_code == 422
     assert list(outbox.iterdir()) == []
+
+
+def test_an_image_with_a_malformed_partition_table_is_422_and_leaves_nothing(
+    queued_api: TestClient, outbox: Path
+) -> None:
+    image = make_image([], table=table_bytes([NVS, (1, 1, 0xA000, 0x1000, "phy_init")]))
+    encoded = base64.b64encode(image).decode("ascii")
+
+    reply = queued_api.post("/jobs", json=body(image=encoded))
+
+    assert reply.status_code == 422
+    assert list(outbox.iterdir()) == []
+
+
+def test_a_job_reports_how_its_image_will_be_flashed(queued_api: TestClient) -> None:
+    image = make_image((NVS, FACTORY), contents={0x10000: b"\xe9app"})
+    encoded = base64.b64encode(image).decode("ascii")
+
+    job_id = queued_api.post("/jobs", json=body(image=encoded)).json()["id"]
+
+    flash = queued_api.get(f"/jobs/{job_id}").json()["job"]["flash"]
+    assert flash == flash_image.describe(flash_image.plan(image))
+    assert flash["mode"] == "segments"
+
+
+def test_a_flat_image_is_reported_as_a_flat_flash(queued_api: TestClient) -> None:
+    job_id = queued_api.post("/jobs", json=body()).json()["id"]
+
+    assert queued_api.get(f"/jobs/{job_id}").json()["job"]["flash"]["mode"] == "flat"
 
 
 def test_a_job_with_a_mac_is_accepted_and_the_mac_is_lowercased(

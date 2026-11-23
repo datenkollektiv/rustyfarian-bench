@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import signal
 import subprocess
@@ -474,3 +475,58 @@ def wait_until(pred: Callable[[], bool], timeout: float = 2.0) -> bool:
             return True
         _real_sleep(0.005)
     return pred()
+
+
+# -- merged flash images ------------------------------------------------------------------------
+
+# (type, subtype, offset, size, label)
+PartSpec = tuple[int, int, int, int, str]
+
+NVS: PartSpec = (1, 2, 0x9000, 0x6000, "nvs")
+NVS_CLASSIC: PartSpec = (1, 2, 0x9000, 0x4000, "nvs")  # leaves room for otadata at 0xd000
+PHY_INIT: PartSpec = (1, 1, 0xF000, 0x1000, "phy_init")
+FACTORY: PartSpec = (0, 0, 0x10000, 0x3F0000, "factory")
+OTADATA: PartSpec = (1, 0, 0xD000, 0x2000, "otadata")
+OTA_0: PartSpec = (0, 0x10, 0x10000, 0x100000, "ota_0")
+OTA_1: PartSpec = (0, 0x11, 0x110000, 0x100000, "ota_1")
+
+
+def table_entry(spec: PartSpec) -> bytes:
+    """One 32-byte partition table entry."""
+    ptype, subtype, offset, size, label = spec
+    return (
+        b"\xaa\x50"
+        + bytes([ptype, subtype])
+        + offset.to_bytes(4, "little")
+        + size.to_bytes(4, "little")
+        + label.encode("utf-8").ljust(16, b"\x00")
+        + b"\x00\x00\x00\x00"
+    )
+
+
+def table_bytes(specs: Sequence[PartSpec], *, md5: bool = True) -> bytes:
+    """The partition table as flashed at 0x8000: entries, optional MD5 entry, FF FF terminator."""
+    entries = b"".join(table_entry(s) for s in specs)
+    if md5:
+        entries += b"\xeb\xeb" + b"\xff" * 14 + hashlib.md5(entries).digest()
+    return entries + b"\xff\xff" + b"\xff" * 30
+
+
+def make_image(
+    specs: Sequence[PartSpec],
+    *,
+    contents: dict[int, bytes] | None = None,
+    length: int = 0x9000,
+    md5: bool = True,
+    table: bytes | None = None,
+) -> bytes:
+    """A merged image: 0xFF everywhere, a table at 0x8000, `contents` placed at their offsets.
+
+    The image is at least `length` long, and longer when a content block reaches past it.
+    """
+    blocks = {0x8000: table if table is not None else table_bytes(specs, md5=md5)}
+    blocks.update(contents or {})
+    image = bytearray(b"\xff" * max([length] + [o + len(b) for o, b in blocks.items()]))
+    for offset, data in blocks.items():
+        image[offset : offset + len(data)] = data
+    return bytes(image)

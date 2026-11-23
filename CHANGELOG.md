@@ -13,6 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `serve --parts PATH` names the listed boards by base MAC from a `parts.toml` (`[[parts]]` with `name`, `mac`, `barcode`), read again on every board list.
 - `rustyfarian-bench boards [--probe] [--port P] [--json]` and `just boards` list the boards of a remote bench, with the same URL, token and CA handling as `submit`.
 - The `bench` role installs the gitignored `deploy/ansible/parts.toml` as `/etc/rustyfarian-bench/parts.toml`, checked by the bench's own loader, and passes `--parts`; `just pi-boards` lists the boards of the provisioned bench.
+- A remote job's record carries `flash`: the mode (`segments` or `flat`) and the ranges written or erased.
+
+### Changed
+
+- A remote job writes the merged image by its partition table at `0x8000`: bootloader and table, the `app` partitions without their trailing `0xFF`, and an erased `otadata`; NVS, `phy_init` and every other `data` partition survive the job. An image without a table is written flat from `0x0` as before; a malformed table is refused with 422.
+- An older `serve` cannot read a `job.json` with `flash`: after a rollback, those jobs answer 404 and drop out of the kiosk history.
 
 ## [0.8.0] - 2026-11-21
 

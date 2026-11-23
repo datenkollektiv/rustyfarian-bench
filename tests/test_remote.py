@@ -17,11 +17,11 @@ from typing import Any
 
 import pytest
 
-from rustyfarian_bench import config, remote, runner
+from rustyfarian_bench import config, flash_image, remote, runner
 from rustyfarian_bench.config import Board, ConfigError, Scenario, Step
 from rustyfarian_bench.remote import Job, Worker, create_job, recover, run_job
 
-from .fakes import FakeSerialWorld, shrink_sleep, wait_until
+from .fakes import FACTORY, NVS, FakeSerialWorld, make_image, shrink_sleep, table_bytes, wait_until
 
 SCENARIO = """\
 examples = ["ex1", "ex2"]
@@ -170,25 +170,39 @@ def test_create_job_lays_out_a_runnable_repo(tmp_path: Path) -> None:
     assert (cfg.boards["c6"].baud, cfg.boards["c6"].reset) == (115200, "rts")
 
 
-def test_the_generated_flash_command_writes_the_image_at_zero(tmp_path: Path) -> None:
+def test_the_generated_flash_command_runs_the_flash_image_module_on_the_image(
+    tmp_path: Path,
+) -> None:
     job = create_job(tmp_path, meta(), SCENARIO, IMAGE)
 
     cfg = config.load(tmp_path / job.id)
 
     flash = cfg.flash_for(cfg.boards["c6"])
     assert flash == (
-        "espflash",
-        "write-bin",
-        "--non-interactive",
+        sys.executable,
+        "-m",
+        "rustyfarian_bench.flash_image",
         "--chip",
         "esp32c6",
         "--port",
         "{port}",
-        "0x0",
         "image.bin",
     )
     assert "monitor" not in flash
     assert "reset" not in flash
+
+
+def test_an_interpreter_path_with_braces_survives_the_port_substitution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "executable", "/opt/py{3}/bin/python")
+    job = create_job(tmp_path, meta(), SCENARIO, IMAGE)
+
+    cfg = config.load(tmp_path / job.id)
+
+    flash = [p.format(port="/dev/x") for p in cfg.flash_for(cfg.boards["c6"])]
+    assert flash[0] == "/opt/py{3}/bin/python"
+    assert flash[-3:] == ["--port", "/dev/x", "image.bin"]
 
 
 def test_the_chip_is_normalised(tmp_path: Path) -> None:
@@ -529,6 +543,50 @@ def test_a_job_json_from_before_submitters_still_loads(tmp_path: Path) -> None:
     (job_dir / "job.json").write_text(json.dumps(old))
 
     assert read(job_dir).submitter == ""
+
+
+# -- the flash plan of a job -------------------------------------------------------------------
+
+
+def test_a_flat_image_is_recorded_as_a_flat_flash_plan(tmp_path: Path) -> None:
+    job = create_job(tmp_path, meta(), SCENARIO, IMAGE)
+
+    assert job.flash == flash_image.describe(flash_image.plan(IMAGE))
+    assert job.flash["mode"] == "flat"
+    assert read(tmp_path / job.id).flash == job.flash
+
+
+def test_an_image_with_a_table_is_recorded_as_its_segments(tmp_path: Path) -> None:
+    image = make_image((NVS, FACTORY), contents={0x10000: b"\xe9app"})
+
+    job = create_job(tmp_path, meta(), SCENARIO, image)
+
+    assert job.flash["mode"] == "segments"
+    assert [(o["kind"], o["offset"]) for o in job.flash["ops"]] == [
+        ("write", "0x0"),
+        ("write", "0x10000"),
+    ]
+
+
+def test_a_malformed_partition_table_is_refused_and_leaves_no_job_directory(
+    tmp_path: Path,
+) -> None:
+    image = make_image([], table=table_bytes([NVS, (1, 1, 0xA000, 0x1000, "phy_init")]))
+
+    with pytest.raises(ConfigError, match="partition table"):
+        create_job(tmp_path, meta(), SCENARIO, image)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_job_json_from_before_flash_plans_still_loads(tmp_path: Path) -> None:
+    job = create_job(tmp_path, meta(), SCENARIO, IMAGE)
+    job_dir = tmp_path / job.id
+    old = json.loads((job_dir / "job.json").read_text())
+    del old["flash"]
+    (job_dir / "job.json").write_text(json.dumps(old))
+
+    assert read(job_dir).flash == {}
 
 
 # -- the token file ----------------------------------------------------------------------------
@@ -1018,7 +1076,7 @@ def test_a_child_that_found_no_board_ends_its_job_and_the_next_job_runs(tmp_path
 # -- the whole path, with a real Session -------------------------------------------------------
 
 
-def test_a_session_runs_write_bin_of_the_uploaded_image_at_zero_with_the_chip(
+def test_a_session_flashes_the_uploaded_image_through_the_flash_image_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     job = create_job(tmp_path, meta(), SCENARIO, IMAGE)
@@ -1049,26 +1107,25 @@ def test_a_session_runs_write_bin_of_the_uploaded_image_at_zero_with_the_chip(
     outcome = runner.Session(cfg, opts).run(cfg.scenarios, first_example="ex1")
 
     assert outcome == "pass"
-    writes = [(argv, cwd) for argv, cwd in calls if argv[:2] == ["espflash", "write-bin"]]
-    assert writes == [
+    flashes = [(argv, cwd) for argv, cwd in calls if argv[0] == sys.executable]
+    assert flashes == [
         (
             [
-                "espflash",
-                "write-bin",
-                "--non-interactive",
+                sys.executable,
+                "-m",
+                "rustyfarian_bench.flash_image",
                 "--chip",
                 "esp32c6",
                 "--port",
                 "/dev/ttyACM0",
-                "0x0",
                 "image.bin",
             ],
             job_dir,
         )
     ]
-    assert all(argv[0] == "espflash" for argv, _ in calls)
+    assert all(argv[0] in ("espflash", sys.executable) for argv, _ in calls)
     assert not any(a in ("monitor", "reset") for argv, _ in calls for a in argv)
-    assert (job_dir / "image.bin").read_bytes() == IMAGE  # what write-bin reads, from its cwd
+    assert (job_dir / "image.bin").read_bytes() == IMAGE  # what the module reads, from its cwd
     rows = remote._rows(job_dir, "c6")
     assert [(r["example"], r["verdict"]) for r in rows] == [("ex1", "pass")]
     assert len(world.opened) == 1
