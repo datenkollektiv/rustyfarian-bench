@@ -11,6 +11,7 @@ timeline
     section Ready
         Remote bench auth (feature-doc) : bearer tokens over TLS on the `serve` API, the token reaching the devcontainer through `remoteEnv` like the Claude token
         Remote flash keeps NVS (feature-doc) : `serve` writes the merged image by its partition table, so NVS survives a remote job and an uploaded NVS image provisions a device over the bench, which rgb-clock's provisioned checks need
+        Remote flash only (feature-doc) : `POST /flash` and `just pi-flash --part NAME IMAGE` write a snapshot to one bench board and pass on its boot banner, replacing the SSH copy-and-flash workaround; after NVS stage 1
         Remote board list (feature-doc) : `GET /boards` lists the bench's ports and names verified boards from a host-side `parts.toml`, and `POST /boards/probe` reads MACs through the job queue, so rgb-clock enrols a board without SSH
         Bench kiosk v2 (feature-doc) : the display shows the running job and the last verdicts, from a status file `serve` writes and a `kiosk` subcommand polls
     section Near term
