@@ -154,6 +154,12 @@ submit repo board example *args:
     shift
     {{ uv_run }} rustyfarian-bench --repo "$repo" submit "$@"
 
+# list the boards on a remote bench (URL from $RUSTYFARIAN_BENCH_URL or --bench): `just boards --probe --port /dev/ttyUSB0 --json`
+[group('bench')]
+[positional-arguments]
+boards *args:
+    {{ uv_run }} rustyfarian-bench boards "$@"
+
 # --- bench host (deploy/README.md): pins, then recipes -------------------------
 
 ansible_core := "2.22.0"
@@ -293,6 +299,12 @@ pi-check token="":
 [positional-arguments]
 pi-submit repo board example *args:
     @JUST="{{ just_executable() }}" ANSIBLE="{{ ansible }}" bash "{{ justfile_directory() }}/deploy/bench-client.sh" submit "$@"
+
+# list the boards on the provisioned bench with URL, CA and token from inventory and bench.yaml: `just pi-boards --probe`
+[group('bench-host')]
+[positional-arguments]
+pi-boards *args:
+    @JUST="{{ just_executable() }}" ANSIBLE="{{ ansible }}" bash "{{ justfile_directory() }}/deploy/bench-client.sh" boards "$@"
 
 # --- secrets: SOPS + age files in shared-secrets/ ------------------------------
 

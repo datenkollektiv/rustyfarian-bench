@@ -20,6 +20,7 @@ PORT_PREFIXES = ("/dev/cu.usbmodem", "/dev/cu.usbserial", "/dev/ttyUSB", "/dev/t
 
 # espflash parses this as a clap bool: only "true" / "false" are accepted, not "1".
 ESPFLASH_ENV = {**os.environ, "ESPFLASH_SKIP_UPDATE_CHECK": "true"}
+PROBE_TIMEOUT = 30.0  # seconds `espflash board-info` may take before a probe gives up
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,7 @@ def probe(port: str) -> tuple[Device | None, str]:
             ["espflash", "board-info", "--port", port, "--non-interactive"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=PROBE_TIMEOUT,
             env=ESPFLASH_ENV,
         )
     except subprocess.TimeoutExpired:

@@ -1,7 +1,7 @@
 """Guard the CLI contract that consumer repos rely on.
 
 The snapshot is the surface as of v0.7.0. Changes must be additive: the only
-allowed additions are `--status-file` on `serve` and a `kiosk` subcommand, and
+allowed additions are `--status-file` and `--parts` on `serve` and a `kiosk` subcommand, and
 both are optional here so the guard can land before them. The `kiosk` options
 are not in the snapshot, so `test_kiosk_has_its_options` pins them. Anything
 else that appears or disappears fails.
@@ -33,6 +33,7 @@ SNAPSHOT_OPTIONS: dict[str, set[str]] = {
         "--attended",
     },
     "submit": {"--bench", "--check", "--image", "--no-build", "--wait"},
+    "boards": {"--bench", "--probe", "--port", "--json"},
     "serve": {
         "--host",
         "--port",
@@ -49,6 +50,7 @@ SNAPSHOT_OPTIONS: dict[str, set[str]] = {
 SNAPSHOT_POSITIONALS: dict[str, list[str]] = {
     "run": ["target", "check"],
     "submit": ["board", "example"],
+    "boards": [],
     "serve": [],
     "list": [],
     "detect": [],
@@ -56,7 +58,7 @@ SNAPSHOT_POSITIONALS: dict[str, list[str]] = {
 
 # Additive entries that may (not must) be present.
 OPTIONAL_COMMANDS = {"kiosk"}
-OPTIONAL_OPTIONS = {"serve": {"--status-file"}}
+OPTIONAL_OPTIONS = {"serve": {"--status-file", "--parts"}}
 
 
 class _Captured(Exception):

@@ -6,6 +6,7 @@ import base64
 import hmac
 import json
 import os
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from functools import partial
@@ -17,6 +18,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from rustyfarian_bench import remote, server
+from rustyfarian_bench.boards import PortInfo
 from rustyfarian_bench.config import ConfigError
 from rustyfarian_bench.status import StatusWriter
 
@@ -719,3 +721,256 @@ def test_serve_builds_a_status_writer_only_with_a_status_file(
     assert isinstance(seen[1], StatusWriter)
     assert len(uvicorn_run) == 2
     assert not (tmp_path / "s.json").exists()  # uvicorn is faked: no lifespan ran
+
+
+# -- the board list and the probe ------------------------------------------------------------------
+
+BOARD_MAC = "02:00:00:12:00:b8"
+
+
+def probe_child_argv(chip: str = "esp32", mac: str = BOARD_MAC, delay: float = 0.0) -> list[str]:
+    code = (
+        "import json, time; "
+        f"time.sleep({delay}); "
+        f"print(json.dumps({{'chip': {chip!r}, 'mac': {mac!r}, 'error': None}}))"
+    )
+    return [sys.executable, "-c", code]
+
+
+@pytest.fixture
+def board_port(tmp_path: Path) -> str:
+    """A device node that exists, so the registry can stat it; the probe child never opens it."""
+    node = tmp_path / "ttyUSB0"
+    node.write_text("")
+    return str(node)
+
+
+@pytest.fixture
+def boards_app(outbox: Path, token_file: Path, board_port: str) -> Iterator[TestClient]:
+    info = PortInfo(board_port, None, 0x10C4, 0xEA60, "0001", "1-1")
+    app = server.create_app(
+        outbox,
+        runner=idle,
+        token_file=token_file,
+        lister=lambda: [info],
+        probe_argv=probe_child_argv(),
+    )
+    with TestClient(app) as c:
+        yield c
+
+
+def poll_probe(c: TestClient, probe_id: str) -> dict[str, Any]:
+    assert wait_until(
+        lambda: c.get(f"/boards/probe/{probe_id}", headers=BEARER).json()["state"] == "done", 10.0
+    )
+    got: dict[str, Any] = c.get(f"/boards/probe/{probe_id}", headers=BEARER).json()
+    return got
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("get", "/boards"), ("post", "/boards/probe"), ("get", "/boards/probe/p-01234567")],
+)
+def test_the_board_routes_need_a_token(boards_app: TestClient, method: str, path: str) -> None:
+    assert getattr(boards_app, method)(path).status_code == 401
+    assert (
+        getattr(boards_app, method)(path, headers={"Authorization": "Bearer nope"}).status_code
+        == 401
+    )
+
+
+def test_the_list_shows_an_attached_port_unverified_without_a_name(
+    boards_app: TestClient, board_port: str
+) -> None:
+    got = boards_app.get("/boards", headers=BEARER).json()
+
+    assert got["schema"] == 1
+    assert got["parts"] == {"loaded": False}
+    [board] = got["boards"]
+    assert (board["port"], board["verified"], board["mac"], board["name"]) == (
+        board_port,
+        False,
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("bad", ["/dev/ttyUSB9", "--help", "-x"])
+def test_a_probe_of_a_port_outside_the_listing_is_422(
+    boards_app: TestClient, outbox: Path, bad: str
+) -> None:
+    r = boards_app.post("/boards/probe", json={"ports": [bad]}, headers=BEARER)
+
+    assert r.status_code == 422
+    assert list(outbox.iterdir()) == []
+
+
+def test_a_probe_is_202_then_polled_to_done_and_the_board_is_verified(
+    boards_app: TestClient, board_port: str, outbox: Path
+) -> None:
+    r = boards_app.post("/boards/probe", json={"ports": [board_port]}, headers=BEARER)
+
+    assert r.status_code == 202
+    sent = r.json()
+    assert set(sent) == {"id", "state", "ports", "reset", "note"}
+    assert (sent["ports"], sent["reset"]) == ([board_port], True)
+    done = poll_probe(boards_app, sent["id"])
+    assert set(done) == {"id", "state", "reset", "results"}
+    assert done["results"] == [
+        {"port": board_port, "state": "done", "chip": "esp32", "mac": BOARD_MAC, "error": None}
+    ]
+    [board] = boards_app.get("/boards", headers=BEARER).json()["boards"]
+    assert (board["verified"], board["mac"], board["chip"], board["mac_source"]) == (
+        True,
+        BOARD_MAC,
+        "esp32",
+        "probe",
+    )
+    assert list(outbox.iterdir()) == []  # a probe is not a job
+
+
+def test_a_probe_without_a_body_probes_every_listed_port(
+    boards_app: TestClient, board_port: str
+) -> None:
+    r = boards_app.post("/boards/probe", headers=BEARER)
+
+    assert r.status_code == 202
+    assert r.json()["ports"] == [board_port]
+    poll_probe(boards_app, r.json()["id"])
+
+
+def test_a_second_probe_request_while_one_runs_reuses_its_id(
+    outbox: Path, token_file: Path, board_port: str
+) -> None:
+    info = PortInfo(board_port, None, 0x10C4, 0xEA60, "0001", "1-1")
+    app = server.create_app(
+        outbox,
+        runner=idle,
+        token_file=token_file,
+        lister=lambda: [info],
+        probe_argv=probe_child_argv(delay=0.5),
+    )
+    with TestClient(app) as c:
+        first = c.post("/boards/probe", headers=BEARER).json()
+        second = c.post("/boards/probe", headers=BEARER).json()
+
+        assert second["id"] == first["id"]
+        poll_probe(c, first["id"])
+
+
+def test_an_unknown_probe_id_is_404(boards_app: TestClient) -> None:
+    for probe_id in ("p-01234567", "nonsense"):
+        assert boards_app.get(f"/boards/probe/{probe_id}", headers=BEARER).status_code == 404
+
+
+def test_the_list_names_a_board_from_the_parts_file(
+    outbox: Path, token_file: Path, tmp_path: Path
+) -> None:
+    parts = tmp_path / "parts.toml"
+    parts.write_text(f'[[parts]]\nname = "bench-one"\nmac = "{BOARD_MAC.upper()}"\n')
+    info = PortInfo("/dev/ttyACM0", None, 0x303A, 0x1001, BOARD_MAC.upper(), "1-2")
+    app = server.create_app(
+        outbox, runner=idle, token_file=token_file, parts_file=parts, lister=lambda: [info]
+    )
+    with TestClient(app) as c:
+        got = c.get("/boards", headers=BEARER).json()
+
+    assert got["parts"] == {"loaded": True}
+    assert got["boards"][0]["name"] == "bench-one"
+    assert got["boards"][0]["mac_source"] == "usb-serial"
+
+
+def test_a_parts_file_that_broke_is_503_on_the_board_routes_only(
+    outbox: Path, token_file: Path, tmp_path: Path
+) -> None:
+    parts = tmp_path / "parts.toml"
+    parts.write_text('[[parts]]\nname = "bench-one"\nmac = "02:00:00:12:00:b8"\n')
+    app = server.create_app(
+        outbox, runner=idle, token_file=token_file, parts_file=parts, lister=lambda: []
+    )
+    with TestClient(app) as c:
+        parts.write_text("[[parts")
+
+        listed = c.get("/boards", headers=BEARER)
+        probed = c.post("/boards/probe", headers=BEARER)
+        job = c.get(f"/jobs/{JOB_ID}", headers=BEARER)
+
+    assert (listed.status_code, probed.status_code, job.status_code) == (503, 503, 404)
+    assert str(parts) not in listed.text
+
+
+def test_serve_refuses_to_start_with_a_bad_parts_file(
+    outbox: Path, tmp_path: Path, uvicorn_run: list[dict[str, Any]]
+) -> None:
+    parts = tmp_path / "parts.toml"
+    parts.write_text("[[parts")
+
+    with pytest.raises(ConfigError):
+        server.serve("127.0.0.1", 8000, outbox, 600.0, parts_file=parts)
+
+    assert uvicorn_run == []
+
+
+def test_serve_hands_the_parts_file_to_the_app(
+    outbox: Path,
+    tmp_path: Path,
+    uvicorn_run: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parts = tmp_path / "parts.toml"
+    parts.write_text('[[parts]]\nname = "bench-one"\nmac = "02:00:00:12:00:b8"\n')
+    seen: list[Path | None] = []
+    real = server.create_app
+
+    def spy(*a: Any, **kw: Any) -> Any:
+        seen.append(kw.get("parts_file"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(server, "create_app", spy)
+
+    server.serve("127.0.0.1", 8000, outbox, 600.0, parts_file=parts)
+
+    assert seen == [parts]
+
+
+def test_a_probe_waits_behind_a_running_job_and_leaves_status_and_outbox_alone(
+    outbox: Path, token_file: Path, board_port: str, tmp_path: Path
+) -> None:
+    path = tmp_path / "status.json"
+    gate = threading.Event()
+    info = PortInfo(board_port, None, 0x10C4, 0xEA60, "0001", "1-1")
+
+    def gated(job_dir: Path) -> None:
+        gate.wait(10.0)
+        remote.run_job(job_dir, 30, child("pass", "all good"))
+
+    writer = StatusWriter(path, outbox, version="9.9.9")
+    app = server.create_app(
+        outbox,
+        runner=gated,
+        token_file=token_file,
+        status=writer,
+        lister=lambda: [info],
+        probe_argv=probe_child_argv(),
+    )
+    try:
+        with TestClient(app) as c:
+            job_id = c.post("/jobs", json=body(), headers=BEARER).json()["id"]
+            assert wait_until(lambda: status_of(path)["state"] == "running", 5.0)
+
+            probe = c.post("/boards/probe", headers=BEARER).json()
+            got = c.get(f"/boards/probe/{probe['id']}", headers=BEARER).json()
+            assert got["state"] == "queued"  # never concurrent with the running job
+
+            gate.set()
+            poll_probe(c, probe["id"])
+            assert wait_until(
+                lambda: c.get(f"/jobs/{job_id}", headers=BEARER).json()["job"]["status"] == "done",
+                10.0,
+            )
+            assert wait_until(lambda: status_of(path)["state"] == "idle", 5.0)
+            assert [h["verdict"] for h in status_of(path)["history"]] == ["pass"]
+            assert [p.name for p in outbox.iterdir()] == [job_id]
+    finally:
+        gate.set()
+        writer.stop()

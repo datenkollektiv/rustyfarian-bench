@@ -100,6 +100,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         token_file=args.token_file,
         ssl_certfile=args.ssl_certfile,
         ssl_keyfile=args.ssl_keyfile,
+        parts_file=args.parts,
         **({} if args.status_file is None else {"status_file": args.status_file}),
     )
     return 0
@@ -150,6 +151,15 @@ def _cmd_kiosk(args: argparse.Namespace) -> int:
         signal.signal(signal.SIGTERM, previous)
 
 
+def _add_bench(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--bench",
+        default=os.environ.get(client.URL_ENV) or None,  # "" is unset, as the devcontainer sets
+        metavar="URL",
+        help=f"the bench host's base URL (default: ${client.URL_ENV})",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="rustyfarian-bench", description=__doc__)
     parser.add_argument(
@@ -191,17 +201,28 @@ def main(argv: list[str] | None = None) -> int:
     submit = sub.add_parser("submit", help="build here, run the check on a remote bench host")
     submit.add_argument("board", help="board key, e.g. `s3`")
     submit.add_argument("example", help="example name")
-    submit.add_argument(
-        "--bench",
-        default=os.environ.get(client.URL_ENV) or None,  # "" is unset, as the devcontainer sets
-        metavar="URL",
-        help=f"the bench host's base URL (default: ${client.URL_ENV})",
-    )
+    _add_bench(submit)
     submit.add_argument("--check", help="check on the board, when several list the example")
     submit.add_argument("--image", type=Path, help="flash image to upload instead of building one")
     submit.add_argument("--no-build", action="store_true", help="skip the build and image steps")
     submit.add_argument("--wait", action="store_true", help="wait for the verdict and exit with it")
     submit.set_defaults(func=client.cmd_submit)
+
+    boards = sub.add_parser("boards", help="list the boards on a remote bench host")
+    _add_bench(boards)
+    boards.add_argument(
+        "--probe",
+        action="store_true",
+        help="read each board's MAC and chip with espflash; resets the board",
+    )
+    boards.add_argument(
+        "--port",
+        action="append",
+        metavar="DEVICE",
+        help="serial port on the bench host to probe, as listed (repeatable; needs --probe)",
+    )
+    boards.add_argument("--json", action="store_true", help="print the host's reply as JSON")
+    boards.set_defaults(func=client.cmd_boards)
 
     serve = sub.add_parser("serve", help="serve the bench to `submit` (needs the serve extra)")
     serve.add_argument("--host", default="127.0.0.1", help="address to listen on")
@@ -232,6 +253,12 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         metavar="PATH",
         help="keep this world-readable status file for the kiosk panel (off by default)",
+    )
+    serve.add_argument(
+        "--parts",
+        type=Path,
+        metavar="PATH",
+        help="parts.toml naming boards by base MAC in `GET /boards` (off by default)",
     )
     serve.set_defaults(func=_cmd_serve)
 
@@ -276,9 +303,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="list scenarios").set_defaults(func=_cmd_list)
     sub.add_parser("detect", help="probe connected boards").set_defaults(func=_cmd_detect)
 
+    remote_parsers = {"submit": submit, "boards": boards}
     args = parser.parse_args(argv)
-    if args.command == "submit" and args.bench is None:
-        submit.error(f"--bench URL is required, or set ${client.URL_ENV}")
+    if args.command in remote_parsers and args.bench is None:
+        remote_parsers[args.command].error(f"--bench URL is required, or set ${client.URL_ENV}")
     args.repo = args.repo.resolve()
     try:
         return int(args.func(args))

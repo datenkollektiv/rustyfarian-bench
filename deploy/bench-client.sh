@@ -3,16 +3,17 @@ set -euo pipefail
 # bench-client.sh — talk to the provisioned bench: URL from the inventory, CA and token from bench.yaml.
 # Usage: deploy/bench-client.sh check [TOKEN_NAME]
 #        deploy/bench-client.sh submit REPO BOARD EXAMPLE [SUBMIT_ARGS...]
-# Run through `just pi-check` / `just pi-submit`, which pass ANSIBLE and JUST.
+#        deploy/bench-client.sh boards [BOARDS_ARGS...]
+# Run through `just pi-check` / `just pi-submit` / `just pi-boards`, which pass ANSIBLE and JUST.
 # The token only ever travels through pipes and submit's environment, never argv or the terminal.
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 secrets="$root/shared-secrets/bench.yaml"
 just_cmd=${JUST:-just}
 # the pinned `uvx … ansible-core` command from the justfile; split on purpose when used
-ansible_cmd=${ANSIBLE:?run this through just pi-check or just pi-submit}
+ansible_cmd=${ANSIBLE:?run this through just pi-check, pi-submit or pi-boards}
 
-usage() { sed -n '3,4s/^# //p' "$0" >&2; exit 2; }
+usage() { sed -n '3,6s/^# //p' "$0" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 command=$1
 shift
@@ -58,6 +59,11 @@ case "$command" in
         value=$(token "$(first_token)")
         RUSTYFARIAN_BENCH_URL="$url" RUSTYFARIAN_BENCH_CA="$ca" RUSTYFARIAN_BENCH_TOKEN="$value" \
             "$just_cmd" --justfile "$root/justfile" submit "$@"
+        ;;
+    boards)
+        value=$(token "$(first_token)")
+        RUSTYFARIAN_BENCH_URL="$url" RUSTYFARIAN_BENCH_CA="$ca" RUSTYFARIAN_BENCH_TOKEN="$value" \
+            "$just_cmd" --justfile "$root/justfile" boards "$@"
         ;;
     *)
         usage
