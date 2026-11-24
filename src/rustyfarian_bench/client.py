@@ -237,7 +237,13 @@ def cmd_flash(args: argparse.Namespace) -> int:
         return 2
     except KeyboardInterrupt:
         print()
-        ui.warn("aborted")
+        if getattr(args, "probe", False):
+            ui.warn(
+                "aborted; nothing was flashed "
+                "(a probe already queued keeps running on the bench host)"
+            )
+        else:
+            ui.warn("aborted")
         return 130
 
 
@@ -248,6 +254,8 @@ def _flash(args: argparse.Namespace) -> int:
     except OSError as e:
         raise ConfigError(f"{args.image}: {e.strerror or e}") from None
     chip = flash_image.merged_chip(image)  # ConfigError before anything is uploaded
+    if getattr(args, "probe", False):
+        _probe_for_flash(base, args)
     body: dict[str, Any] = {"image": base64.b64encode(image).decode("ascii")}
     if args.port is not None:
         body["port"] = args.port
@@ -277,6 +285,43 @@ def _safe(value: object) -> str:
     return _UNSAFE.sub("?", str(value))
 
 
+_PROBE_WARNING = (
+    "probing resets each board: a running app restarts, and the probe waits behind any running job"
+)
+
+
+def _probe_for_flash(base: str, args: argparse.Namespace) -> None:
+    """Probe the unverified boards a `flash --probe` may target; every failure is a warning.
+
+    The `POST /flash` answer is the guard, so nothing here stops the flash.
+    """
+    try:
+        reply = _request(f"{base}/boards", None, GET_TIMEOUT)
+        listed = reply.get("boards")
+        if not isinstance(listed, list):
+            raise RemoteError(f"{base}/boards: unexpected reply")
+        unverified = [b["port"] for b in listed if b.get("port") and not b.get("verified")]
+        if args.port is not None:
+            ports = [args.port] if args.port in unverified else []
+        else:
+            parts = reply.get("parts")
+            if not isinstance(parts, dict) or not parts.get("loaded"):
+                return
+            if any(b.get("verified") and b.get("name") == args.part for b in listed):
+                return
+            ports = unverified
+        if not ports:
+            return
+        ui.warn(_PROBE_WARNING)
+        result = _probe(base, ports)
+    except RemoteError as e:
+        ui.warn(_safe(e))
+        return
+    for r in result["results"]:
+        if r["error"]:
+            ui.warn(f"{_safe(r['port'])}: {_safe(r['error'])}")
+
+
 def cmd_boards(args: argparse.Namespace) -> int:
     try:
         return _boards(args)
@@ -298,10 +343,7 @@ def _boards(args: argparse.Namespace) -> int:
         if args.json:
             print("probing resets the boards", file=sys.stderr)
         else:
-            ui.warn(
-                "probing resets each board: a running app restarts, "
-                "and the probe waits behind any running job"
-            )
+            ui.warn(_PROBE_WARNING)
         probe = _probe(base, args.port or None)
     reply = _request(f"{base}/boards", None, GET_TIMEOUT)
     if not isinstance(reply.get("boards"), list):

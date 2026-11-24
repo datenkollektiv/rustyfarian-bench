@@ -257,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
         metavar="REGEX",
         help="boot line to wait for instead of the first app line",
     )
+    flash.add_argument(
+        "--probe", action="store_true", help="probe unverified boards first; resets them"
+    )
     flash.add_argument("--wait", action="store_true", help="wait for the verdict and exit with it")
     flash.set_defaults(func=client.cmd_flash)
 
