@@ -1,12 +1,13 @@
 ---
-gate: none
-desk-work: available
+gate: hardware
+gate-note: a tagged release on the Pi shows a job on the panel and the second provisioning run reports `changed=0`
+desk-work: none
 ---
 
 # Feature: Bench Kiosk v2
 
 The bench Pi's panel shows the running job and the last verdicts instead of the static v1 banner.
-v1 decisions carry over (`bench-kiosk-v1.md`): stock `piscreen` DRM overlay, Pillow into the framebuffer, hardened `bench-display` unit.
+v1 decisions carry over (`archive/bench-kiosk-v1.md`): stock `piscreen` DRM overlay, Pillow into the framebuffer, hardened `bench-display` unit.
 
 ## Decisions
 |                                       Decision | Reason                                                              | Rejected Alternative                          |
@@ -40,6 +41,7 @@ v1 decisions carry over (`bench-kiosk-v1.md`): stock `piscreen` DRM overlay, Pil
 - [x] History vs retention: retention must keep the newest 5 finished jobs, noted in its roadmap entry.
 - [x] `maintenance` is reserved in schema 1: v2 never writes it, the kiosk draws it.
 - [ ] SPI speed (from v1): stays 16 MHz unless the 1 s refresh proves too slow.
+- [ ] Farewell at poweroff (from v1): does the DRM driver's shutdown blank the panel after "good-bye"? Check on the Pi.
 - [ ] Log tail: revisit in a later version once retention and NVS settle what logs may hold.
 
 ## State

@@ -69,3 +69,4 @@ Walkthrough and rationale live in `deploy/README.md`; the split is recorded in A
 - 2026-11-15 — Designed, v0.6.0 released, implemented with three reviews applied, SOPS convention v2 adopted, `just doctor` added
 - 2026-11-16 — First Pi 5 run: seed, provision (fixes: fail_msg, handlers, locale, Wi-Fi idempotence, host keys), `pi-submit` passed 3/3
 - 2026-11-19 — Review-queue feedback applied (Ansible review, beekeeper backports): job guard before any role, opt-in `pi-upgrade`, reboot reported, clock wait, DHCP rule, Wi-Fi `argv`, doctor key path; not yet run on the Pi. Second round: apt lists refreshed on every run, a tool bump refused under unfinished jobs, `unattended-upgrades` risk accepted and recorded
+- 2026-11-24 — Closed; the open questions moved to roadmap "Bench host hardening"

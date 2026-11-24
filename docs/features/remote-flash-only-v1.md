@@ -1,7 +1,7 @@
 ---
-gate: none
-gate-note: "Remote flash keeps NVS" stage 1 landed (2026-11-24), so a flash-only job writes segments through `flash_image` and keeps NVS
-desk-work: available
+gate: hardware
+gate-note: `just pi-flash --part bench-esp32c3-mini1 IMAGE` boots the snapshot on the Pi with NVS intact
+desk-work: none
 ---
 
 # Feature: Remote Flash Only v1
@@ -59,4 +59,4 @@ That workaround bypasses the job queue, the port lock and the kiosk.
 
 ## Session Log
 - 2026-11-23 — Feature doc created via /feature dialog: replace the SSH copy-and-flash workaround
-- 2026-11-24: Implemented on `main` (uncommitted). The open questions are settled except the native-USB S3. The Pi gate (`just pi-flash --part bench-esp32c3-mini1 IMAGE`) has not run.
+- 2026-11-24 — Implemented in `83c03eb`; open questions settled except the native-USB S3; Pi gate open

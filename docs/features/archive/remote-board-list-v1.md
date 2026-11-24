@@ -61,3 +61,4 @@ Source: `review-queue/rustyfarian-bench-remote-board-list.md`; first step of roa
 - 2026-11-23 — Plan decisions recorded (async probe, dedupe and cooldown, allowlist, `deploy/ansible/parts.toml`); core, role and docs written
 - 2026-11-23 — v0.9.0.dev1 on the Pi: `just pi-boards --probe` named `bench-esp32c3-mini1` (CH340) from `parts.toml`
 - 2026-11-23 — Gate cleared: a replug on the Pi made the probed C3 unverified; the native-USB S3 questions stay open
+- 2026-11-24 — Closed; the native-USB S3 questions moved to roadmap "Native-USB S3 on the bench"

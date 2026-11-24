@@ -49,3 +49,4 @@ v1 is first light for the roadmap's bench kiosk; the job view is v2 and reuses t
 ## Session Log
 - 2026-11-20 — Feature doc created via /feature dialog; stock `piscreen` overlay and Pillow renderer chosen, Chromium kiosk deferred to v2; `deploy/display-probe.sh` run: both `piscreen` variants drive the panel, upside down at the overlay's default 270 (so rotate=90); `display` role implemented, lint and smoke render green; first Pi run: banner readable, DRM rotation corrected from 90 to 180; second run `changed=0`, gate closed
 - 2026-11-20 — Farewell: a stop (shutdown, reboot, restart) draws "good-bye" over the banner; `just display-smoke` sends SIGTERM and checks the frame changed; not yet seen on the Pi
+- 2026-11-24 — Closed; the farewell-at-poweroff check moved to kiosk v2, which already holds the SPI speed question
