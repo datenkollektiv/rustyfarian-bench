@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import config, remote, runner, ui
+from . import config, flash_image, remote, runner, ui
 from .config import ConfigError, Scenario
 
 POLL_INTERVAL = 1.0
@@ -219,6 +219,46 @@ def _submit(args: argparse.Namespace) -> int:
     job = _request(f"{base}/jobs", body, POST_TIMEOUT)
     job_id = str(job["id"])
     ui.info(f"submitted job {job_id}")
+    if not args.wait:
+        return 0
+    try:
+        return _wait(base, job_id)
+    except KeyboardInterrupt:
+        print()
+        ui.warn(f"stopped waiting; job {job_id} keeps running on the bench host")
+        return 130
+
+
+def cmd_flash(args: argparse.Namespace) -> int:
+    try:
+        return _flash(args)
+    except RemoteError as e:
+        ui.warn(_safe(e))
+        return 2
+    except KeyboardInterrupt:
+        print()
+        ui.warn("aborted")
+        return 130
+
+
+def _flash(args: argparse.Namespace) -> int:
+    base = _base_url(args.bench)
+    try:
+        image = args.image.read_bytes()
+    except OSError as e:
+        raise ConfigError(f"{args.image}: {e.strerror or e}") from None
+    chip = flash_image.merged_chip(image)  # ConfigError before anything is uploaded
+    body: dict[str, Any] = {"image": base64.b64encode(image).decode("ascii")}
+    if args.port is not None:
+        body["port"] = args.port
+    else:
+        body["part"] = args.part
+    for key in ("baud", "reset", "expect"):
+        if (value := getattr(args, key)) is not None:
+            body[key] = value
+    job = _request(f"{base}/flash", body, POST_TIMEOUT)
+    job_id = str(job["id"])
+    ui.info(f"submitted flash job {job_id} ({chip})")
     if not args.wait:
         return 0
     try:

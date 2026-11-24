@@ -34,6 +34,16 @@ def _whole_seconds(text: str) -> int:
     return seconds
 
 
+def _positive_int(text: str) -> int:
+    try:
+        number = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError(f"must be greater than 0: {text!r}")
+    return number
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     cfg = config.load(args.repo)
     target = f"{args.target}/{args.check}" if args.check else args.target
@@ -224,6 +234,32 @@ def main(argv: list[str] | None = None) -> int:
     boards.add_argument("--json", action="store_true", help="print the host's reply as JSON")
     boards.set_defaults(func=client.cmd_boards)
 
+    flash = sub.add_parser(
+        "flash", help="flash an image onto one remote bench board; passes on its boot banner"
+    )
+    _add_bench(flash)
+    target = flash.add_mutually_exclusive_group(required=True)
+    target.add_argument("--port", help="a port from `boards`")
+    target.add_argument(
+        "--part", metavar="NAME", help="a verified board's parts.toml name, from `boards`"
+    )
+    flash.add_argument("image", type=Path, help="merged image (espflash save-image --merge)")
+    flash.add_argument(
+        "--baud", type=_positive_int, help=f"console baud rate (default {remote.FLASH_BAUD})"
+    )
+    flash.add_argument(
+        "--reset",
+        choices=config.RESET_MODES,
+        help=f"how to reset the board (default {remote.FLASH_RESET})",
+    )
+    flash.add_argument(
+        "--expect",
+        metavar="REGEX",
+        help="boot line to wait for instead of the first app line",
+    )
+    flash.add_argument("--wait", action="store_true", help="wait for the verdict and exit with it")
+    flash.set_defaults(func=client.cmd_flash)
+
     serve = sub.add_parser("serve", help="serve the bench to `submit` (needs the serve extra)")
     serve.add_argument("--host", default="127.0.0.1", help="address to listen on")
     serve.add_argument("--port", type=int, default=8000, help="port to listen on")
@@ -303,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="list scenarios").set_defaults(func=_cmd_list)
     sub.add_parser("detect", help="probe connected boards").set_defaults(func=_cmd_detect)
 
-    remote_parsers = {"submit": submit, "boards": boards}
+    remote_parsers = {"submit": submit, "boards": boards, "flash": flash}
     args = parser.parse_args(argv)
     if args.command in remote_parsers and args.bench is None:
         remote_parsers[args.command].error(f"--bench URL is required, or set ${client.URL_ENV}")

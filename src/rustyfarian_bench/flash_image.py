@@ -45,6 +45,23 @@ OTADATA = 0  # data subtype
 # which may end in 0xFF themselves, and a sector the write stops short of keeps stale bytes.
 APP_TAIL = 64
 
+# The chip id in an image header (u16 LE at +12) and where that family's bootloader image sits.
+CHIP_IDS: dict[int, str] = {
+    0: "esp32",
+    2: "esp32s2",
+    5: "esp32c3",
+    9: "esp32s3",
+    12: "esp32c2",
+    13: "esp32c6",
+    16: "esp32h2",
+    18: "esp32p4",
+    23: "esp32c5",
+}
+_AT = {"esp32": 0x1000, "esp32s2": 0x1000, "esp32c5": 0x2000, "esp32p4": 0x2000}
+BOOTLOADER_AT: dict[str, int] = {chip: _AT.get(chip, 0) for chip in CHIP_IDS.values()}
+_HEADER = 14  # magic, segment count, flash mode and size, entry point, wp pin, spi drive, chip id
+_IMAGE_MAGIC = 0xE9
+
 _ENTRY = 32
 _MAGIC = b"\xaa\x50"
 _MD5 = b"\xeb\xeb"
@@ -73,6 +90,43 @@ class Op:
 class FlashPlan:
     mode: Literal["flat", "segments"]
     ops: tuple[Op, ...]
+
+
+def chip_of(image: bytes) -> str:
+    """The chip a merged image is for, from its bootloader header: pure, no I/O.
+
+    A hit counts only at the offset that chip's family uses, so a stray 0xE9 elsewhere is no
+    match; none or several hits mean the file is not a merged image we can place.
+    """
+    hits = []
+    for off in (0x0, 0x1000, 0x2000):
+        if len(image) < off + _HEADER or image[off] != _IMAGE_MAGIC:
+            continue
+        chip = CHIP_IDS.get(struct.unpack_from("<H", image, off + 12)[0])
+        if chip is not None and BOOTLOADER_AT[chip] == off:
+            hits.append(chip)
+    if not hits:
+        raise ConfigError(
+            "image: no ESP bootloader header at 0x0, 0x1000 or 0x2000; is it a merged image?"
+        )
+    if len(hits) > 1:
+        raise ConfigError("image: ambiguous bootloader header; is it a merged image?")
+    return hits[0]
+
+
+def merged_chip(image: bytes) -> str:
+    """`chip_of` for a flash job, which also needs a partition table at 0x8000.
+
+    A bare app image of a 0x0-family chip carries the same header at 0x0; written flat, it
+    would replace the bootloader and table. Raises ConfigError for either.
+    """
+    chip = chip_of(image)
+    if parse_table(image) is None:
+        raise ConfigError(
+            "image: no partition table at 0x8000; flash takes a merged image "
+            "(espflash save-image --merge)"
+        )
+    return chip
 
 
 def _bad(text: str) -> ConfigError:
