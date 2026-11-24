@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A flash job reads the chip from the image header and passes once the app's first line shows after the reset.
 - `rustyfarian-bench flash (--port P | --part NAME) IMAGE [--baud] [--reset] [--expect REGEX] [--wait]`, `just flash` and `just pi-flash` replace the SSH copy-and-flash workaround.
 - A remote job's record carries `kind` (`check` or `flash`) and, for a flash job, its `port`.
+- `flash --probe` probes the unverified boards before a `--part` or `--port` flash, so a board is found again after a `serve` restart.
 
 ### Changed
 

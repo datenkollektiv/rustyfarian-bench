@@ -34,7 +34,16 @@ SNAPSHOT_OPTIONS: dict[str, set[str]] = {
     },
     "submit": {"--bench", "--check", "--image", "--no-build", "--wait"},
     "boards": {"--bench", "--probe", "--port", "--json"},
-    "flash": {"--bench", "--port", "--part", "--baud", "--reset", "--expect", "--wait"},
+    "flash": {
+        "--bench",
+        "--port",
+        "--part",
+        "--probe",
+        "--baud",
+        "--reset",
+        "--expect",
+        "--wait",
+    },
     "serve": {
         "--host",
         "--port",

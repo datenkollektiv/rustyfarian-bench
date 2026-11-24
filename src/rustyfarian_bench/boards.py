@@ -377,7 +377,8 @@ class BoardRegistry:
         found = [b for b in listed if b["verified"] and b["name"] == part]
         if not found:
             raise UnknownPort(
-                f"part: {part!r} is not attached or not verified; run `boards --probe`"
+                f"part: {part!r} is not attached or not verified; "
+                "run `boards --probe`, or `flash --probe`"
             )
         if len(found) > 1:
             raise UnknownPort(f"part: {part!r} is ambiguous, several attached boards carry it")

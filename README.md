@@ -483,11 +483,13 @@ barcode = true                   # read by the label printer; the bench ignores 
 ```bash
 just flash --part bench-esp32c3-mini1 tmp/app.bin --wait   # or: rustyfarian-bench flash ...
 just flash --port /dev/ttyUSB0 tmp/app.bin                  # a port as `boards` lists it
+just flash --probe --part bench-esp32c3-mini1 tmp/app.bin   # probes unverified boards first
 ```
 
 - `flash` writes a merged image onto one board without a check, and passes once the app's first line shows after the reset.
 - It needs no consumer repo, and uses the same URL, token and CA variables as `submit`.
-- `--part NAME` picks a board by its `parts.toml` name; that board must be verified, so a replugged one needs `boards --probe` first.
+- `--part NAME` picks a board by its `parts.toml` name; that board must be verified, so a replugged one, or any board after a `serve` restart, needs `boards --probe` or `flash --probe` first.
+- `flash --probe` resets only the unverified boards it probes, and skips the probe when the named part is already verified.
 - `--port PORT` must be in the current board list; a verified MAC on it is pinned, so a board swapped while the job waits fails it.
 - The image must be merged, with a partition table at `0x8000`; a bare app image is refused before upload.
 - The chip comes from the image's bootloader header, at `0x0`, `0x1000` (esp32, esp32s2) or `0x2000` (esp32c5, esp32p4); detection checks it against the board.

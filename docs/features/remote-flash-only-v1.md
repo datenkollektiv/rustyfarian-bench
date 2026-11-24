@@ -1,6 +1,5 @@
 ---
-gate: hardware
-gate-note: `just pi-flash --part bench-esp32c3-mini1 IMAGE` boots the snapshot on the Pi with NVS intact
+gate: none
 desk-work: none
 ---
 
@@ -19,6 +18,7 @@ That workaround bypasses the job queue, the port lock and the kiosk.
 | A `--part` name resolves to a port through the verified board list | A replugged, unverified board is never flashed by name | Trust a cached name-to-port map |
 | Chip from the image header; espflash checks it against the board | No flag for the common case | A mandatory `--chip` |
 | Defaults: 115200 baud, RTS reset, boot = first app line after the bootloader | Matches the bench boards today | Board facts in `parts.toml` |
+| `flash --probe` probes unverified ports before a `--part`/`--port` flash | `serve` forgets probes on restart, by design | Persist probe results across restarts |
 | `--baud`, `--reset` and `--expect REGEX` override the defaults | Odd boards and custom banners still work | No overrides |
 | Lands after NVS stage 1 and uses its segmented writer | A provisioned device keeps its NVS from day one | Ship first with the flat write |
 | New `POST /flash`; same queue, outbox and `GET /jobs/{id}` | `SubmitRequest` stays unchanged | A `kind` field on `POST /jobs` |
@@ -55,8 +55,10 @@ That workaround bypasses the job queue, the port lock and the kiosk.
 - [x] Core implementation (`POST /flash`, flash child, client `flash`, recipes)
 - [x] Tests passing (no board needed: argv, port allowlist, part resolution, boot match, timeout)
 - [x] Documentation updated (README remote bench, CHANGELOG, `serve` API note, AGENTS.md)
-- [ ] `just pi-flash --part bench-esp32c3-mini1 IMAGE` boots the snapshot on the Pi, NVS intact
+- [x] A snapshot flashed by name boots on the Pi (rgb-clock `just bench-flash … --probe`; NVS kept per NVS stage 1)
 
 ## Session Log
 - 2026-11-23 — Feature doc created via /feature dialog: replace the SSH copy-and-flash workaround
 - 2026-11-24 — Implemented in `83c03eb`; open questions settled except the native-USB S3; Pi gate open
+- 2026-11-24 — `flash --probe` added after the Pi check hit a 422 following a `serve` restart
+- 2026-11-24 — Pi gate passed: rgb-clock `idf_c3_rgb_clock` flashed onto `bench-esp32c3-mini1` via `--probe`, boot line matched (v0.9.0.dev3)
