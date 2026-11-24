@@ -922,7 +922,9 @@ def test_run_job_hands_the_detect_timeout_to_the_child_command(
 ) -> None:
     asked: list[tuple[str, float | None]] = []
 
-    def fake_argv(example: str, detect_timeout: float | None = None) -> list[str]:
+    def fake_argv(
+        example: str, detect_timeout: float | None = None, port: str | None = None
+    ) -> list[str]:
         asked.append((example, detect_timeout))
         return child()
 
@@ -1046,7 +1048,9 @@ def test_the_worker_threads_the_detect_timeout_into_the_child_command(
 ) -> None:
     asked: list[float | None] = []
 
-    def fake_argv(example: str, detect_timeout: float | None = None) -> list[str]:
+    def fake_argv(
+        example: str, detect_timeout: float | None = None, port: str | None = None
+    ) -> list[str]:
         asked.append(detect_timeout)
         return child()
 

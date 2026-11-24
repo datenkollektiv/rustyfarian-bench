@@ -67,7 +67,7 @@ deploy/
   doctor.sh                     # `just doctor`: every prerequisite, with a fix hint
   lint.sh                       # `just deploy-lint`
   sops.example.yaml             # template for the repo root's .sops.yaml (gitignored)
-  bench-client.sh               # `just pi-check`, `just pi-submit` and `just pi-boards`: URL, CA and token for the live bench
+  bench-client.sh               # `just pi-check`, `pi-submit`, `pi-boards` and `pi-flash`: URL, CA and token for the live bench
   display-probe.sh              # run on the Pi: which SPI panel is it? loads an overlay at runtime, no reboot
   touch-probe.sh                # run on the Pi: does the touch panel report taps? read-only, the kiosk keeps running
   cloud-init/
@@ -427,6 +427,15 @@ just pi-boards --probe    # reads each board's MAC and chip with espflash board-
 **A probe resets the board**, so a running app restarts; it waits behind any running or queued job.
 The names come from `deploy/ansible/parts.toml` as installed on the Pi.
 
+Flash a snapshot onto one board the same way, without SSH:
+
+```bash
+just pi-flash --part bench-esp32c3-mini1 tmp/app.bin --wait   # a verified board by name
+just pi-flash --port /dev/ttyUSB0 tmp/app.bin --wait          # or a listed port
+```
+
+The job queues with the checks and passes once the app's first line shows after the reset; NVS survives.
+
 ## Day 2
 
 | Task                    | How                                                                  |
@@ -441,6 +450,7 @@ The names come from `deploy/ansible/parts.toml` as installed on the Pi.
 | Add or revoke a token   | `just secrets-edit bench.yaml`, `just pi-provision`; no restart      |
 | Name a board            | add it to `deploy/ansible/parts.toml`, `just pi-provision`; no restart |
 | List the boards         | `just pi-boards`; `--probe` reads the MACs and resets the boards      |
+| Flash a board           | `just pi-flash --part NAME IMAGE --wait`; no SSH, no check            |
 | Change the Wi-Fi        | `just secrets-edit pi.env`, `just pi-provision`, over Ethernet        |
 | Add a person to SOPS    | their age key in `.sops.yaml`, `just secrets-updatekeys`             |
 | Rebuild the Pi          | Steps 1–4 again; the CA and tokens survive in `shared-secrets/`      |

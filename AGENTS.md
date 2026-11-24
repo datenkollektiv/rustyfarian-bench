@@ -10,18 +10,18 @@ Consumer repos describe boards and checks as TOML under `bench/`; this tool buil
 
 ## Architecture
 
-- `cli.py` — `run`, `list`, `detect`, `submit`, `boards`, `serve` subcommands (entry point `rustyfarian-bench`).
+- `cli.py` — `run`, `list`, `detect`, `submit`, `boards`, `flash`, `serve` subcommands (entry point `rustyfarian-bench`).
 - `config.py` — loads `bench/bench.toml`, the optional git-ignored `bench/bench.local.toml` (per-machine `mac`, `usb_id`, `usb_serial`, `baud`) and `bench/<board>/*.toml` scenarios.
 - `device.py` — polls serial ports and asks `espflash board-info` which chip answers.
 - `serial_lines.py` — background pyserial reader that reopens the port across USB re-enumeration.
 - `steps.py` — judges `expect` / `duration` / `confirm` steps against the line stream.
 - `runner.py` — one session: build, find board, flash, reset, guide steps, append to `results.jsonl`.
-- `remote.py` — stdlib-only core of the remote bench: job files in `outbox/<id>/`, the refusal boundary, the child-process runner and the single worker, which also runs board probes.
-- `boards.py` — stdlib-only board list: attached ports, the `parts.toml` loader, verified MACs and the probe registry (per-port dedupe, 30 s cooldown).
+- `remote.py` — stdlib-only core of the remote bench: job files in `outbox/<id>/`, the refusal boundary, the child-process runner and the single worker, which also runs board probes; a flash job is a generated one-step scenario (`flash_scenario`, `APP_UP`) run through the same `run` child with `--port`.
+- `boards.py` — stdlib-only board list: attached ports, the `parts.toml` loader, verified MACs, the probe registry (per-port dedupe, 30 s cooldown) and `resolve_target` for a flash job's port or part.
 - `probe_port.py` — `python -m` entry a probe runs as a child: `espflash board-info` on one port, one JSON line out.
-- `flash_image.py` — stdlib-only `python -m` entry a job's flash runs: plans a merged image by its partition table (flat without one) and writes it with `espflash write-bin`/`erase-region`, keeping NVS.
-- `server.py` — FastAPI app and `serve()` over `remote.py`: `/jobs`, `GET /boards`, `POST /boards/probe` and `GET /boards/probe/{id}`; imported only with the `serve` extra.
-- `client.py` — `submit`: builds the image, uploads it with the scenario over `urllib` and polls for the verdict; `boards` lists and probes the host's boards.
+- `flash_image.py` — stdlib-only `python -m` entry a job's flash runs: plans a merged image by its partition table (flat without one) and writes it with `espflash write-bin`/`erase-region`, keeping NVS; `chip_of` reads the chip from the bootloader header.
+- `server.py` — FastAPI app and `serve()` over `remote.py`: `/jobs`, `POST /flash`, `GET /boards`, `POST /boards/probe` and `GET /boards/probe/{id}`; imported only with the `serve` extra.
+- `client.py` — `submit`: builds the image, uploads it with the scenario over `urllib` and polls for the verdict; `boards` lists and probes the host's boards; `flash` uploads an image for one board.
 
 ## Development Workflow
 

@@ -25,6 +25,7 @@ from .fakes import (
     make_image,
     table_bytes,
     table_entry,
+    with_header,
 )
 
 C3_PARTS = (NVS, PHY_INIT, FACTORY)
@@ -476,3 +477,117 @@ def test_a_missing_espflash_is_127_with_the_install_hint(
 
     assert code == 127
     assert "espflash" in capsys.readouterr().err
+
+
+# -- the chip an image is for ---------------------------------------------------------------------
+
+FAMILIES = [
+    ("esp32", 0, 0x1000),
+    ("esp32s2", 2, 0x1000),
+    ("esp32c3", 5, 0x0),
+    ("esp32s3", 9, 0x0),
+    ("esp32c2", 12, 0x0),
+    ("esp32c6", 13, 0x0),
+    ("esp32h2", 16, 0x0),
+    ("esp32p4", 18, 0x2000),
+    ("esp32c5", 23, 0x2000),
+]
+
+
+def test_the_tables_agree_with_each_other() -> None:
+    assert {n for n, _, _ in FAMILIES} == set(flash_image.CHIP_IDS.values())
+    assert {i: n for n, i, _ in FAMILIES} == flash_image.CHIP_IDS
+    assert {n: o for n, _, o in FAMILIES} == flash_image.BOOTLOADER_AT
+
+
+@pytest.mark.parametrize(("chip", "chip_id", "at"), FAMILIES)
+def test_the_chip_is_read_from_the_header_at_its_own_offset(
+    chip: str, chip_id: int, at: int
+) -> None:
+    assert flash_image.chip_of(with_header(chip_id, at)) == chip
+
+
+def test_a_merged_classic_esp32_image_is_found_at_0x1000() -> None:
+    image = with_header(0, 0x1000, base=make_image((NVS_CLASSIC, OTADATA, OTA_0)))
+
+    assert flash_image.chip_of(image) == "esp32"
+
+
+def test_the_header_may_end_exactly_at_the_end_of_the_image() -> None:
+    assert flash_image.chip_of(with_header(5, 0, 14)) == "esp32c3"
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.chip_of(with_header(5, 0, 14)[:13])
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        b"",
+        b"\xe9",
+        b"\xff" * 0x9000,
+        b"\x00" * 0x9000,
+        b"\x7fELF" + b"\x00" * 0x9000,
+        with_header(5, 0)[:13],
+    ],
+    ids=["empty", "one-byte", "erased", "zeros", "elf", "truncated-header"],
+)
+def test_an_image_without_a_header_is_refused(image: bytes) -> None:
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.chip_of(image)
+
+
+def test_a_bad_magic_is_refused() -> None:
+    image = bytearray(with_header(5, 0))
+    image[0] = 0xE8
+
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.chip_of(bytes(image))
+
+
+def test_an_unknown_chip_id_is_refused() -> None:
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.chip_of(with_header(0x7777, 0))
+
+
+@pytest.mark.parametrize(
+    ("chip_id", "at"),
+    [(5, 0x1000), (0, 0x0), (0, 0x2000), (23, 0x0), (23, 0x1000), (18, 0x1000), (2, 0x0)],
+)
+def test_a_chip_id_at_an_offset_its_family_does_not_use_is_refused(chip_id: int, at: int) -> None:
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.chip_of(with_header(chip_id, at))
+
+
+def test_two_headers_are_ambiguous() -> None:
+    both = with_header(0, 0x1000, base=with_header(5, 0))
+
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.chip_of(both)
+
+
+# -- a merged image: chip and partition table ---------------------------------------------------
+
+
+def test_merged_chip_wants_a_header_and_a_table() -> None:
+    assert flash_image.merged_chip(with_header(5, 0, base=make_image(C3_PARTS))) == "esp32c3"
+    assert (
+        flash_image.merged_chip(with_header(0, 0x1000, base=make_image((NVS_CLASSIC, OTADATA))))
+        == "esp32"
+    )
+
+
+def test_merged_chip_refuses_an_app_image_without_a_table() -> None:
+    with pytest.raises(ConfigError, match=r"^image: no partition table at 0x8000"):
+        flash_image.merged_chip(with_header(5, 0))
+
+
+def test_merged_chip_refuses_a_table_without_a_header() -> None:
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.merged_chip(make_image(C3_PARTS))
+
+
+def test_merged_chip_refuses_a_malformed_table() -> None:
+    bad = with_header(5, 0, base=make_image(C3_PARTS, table=_corrupt_md5()))
+
+    with pytest.raises(ConfigError, match=r"^image: "):
+        flash_image.merged_chip(bad)

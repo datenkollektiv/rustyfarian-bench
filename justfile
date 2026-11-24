@@ -160,6 +160,12 @@ submit repo board example *args:
 boards *args:
     {{ uv_run }} rustyfarian-bench boards "$@"
 
+# flash an image onto one remote bench board, passing on its boot banner; IMAGE is relative to this checkout: `just flash --part bench-esp32c3-mini1 tmp/app.bin --wait`
+[group('bench')]
+[positional-arguments]
+flash *args:
+    {{ uv_run }} rustyfarian-bench flash "$@"
+
 # --- bench host (deploy/README.md): pins, then recipes -------------------------
 
 ansible_core := "2.22.0"
@@ -305,6 +311,12 @@ pi-submit repo board example *args:
 [positional-arguments]
 pi-boards *args:
     @JUST="{{ just_executable() }}" ANSIBLE="{{ ansible }}" bash "{{ justfile_directory() }}/deploy/bench-client.sh" boards "$@"
+
+# flash an image onto one board of the provisioned bench with URL, CA and token from inventory and bench.yaml: `just pi-flash --part bench-esp32c3-mini1 tmp/app.bin --wait`
+[group('bench-host')]
+[positional-arguments]
+pi-flash *args:
+    @JUST="{{ just_executable() }}" ANSIBLE="{{ ansible }}" bash "{{ justfile_directory() }}/deploy/bench-client.sh" flash "$@"
 
 # --- secrets: SOPS + age files in shared-secrets/ ------------------------------
 

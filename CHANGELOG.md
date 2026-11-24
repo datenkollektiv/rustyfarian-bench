@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rustyfarian-bench boards [--probe] [--port P] [--json]` and `just boards` list the boards of a remote bench, with the same URL, token and CA handling as `submit`.
 - The `bench` role installs the gitignored `deploy/ansible/parts.toml` as `/etc/rustyfarian-bench/parts.toml`, checked by the bench's own loader, and passes `--parts`; `just pi-boards` lists the boards of the provisioned bench.
 - A remote job's record carries `flash`: the mode (`segments` or `flat`) and the ranges written or erased.
+- `POST /flash` queues a flash-only job on one bench board, named by `port` or by a verified `part`. It shares the queue, the outbox and `GET /jobs/{id}` with checks. The chip comes from the image header, and the job passes once the app's first line shows after the reset.
+- `rustyfarian-bench flash (--port P | --part NAME) IMAGE [--baud] [--reset] [--expect REGEX] [--wait]`, `just flash` and `just pi-flash` replace the SSH copy-and-flash workaround.
+- A remote job's record carries `kind` (`check` or `flash`) and, for a flash job, its `port`.
 
 ### Changed
 

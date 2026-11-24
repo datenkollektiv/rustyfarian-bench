@@ -55,6 +55,15 @@ class UnknownPort(ConfigError):
 
 
 @dataclass(frozen=True)
+class Target:
+    """Where a flash job goes: the port, and the verified MAC and part name when known."""
+
+    port: str
+    mac: str | None
+    name: str | None
+
+
+@dataclass(frozen=True)
 class PortInfo:
     port: str
     by_id: str | None
@@ -347,6 +356,33 @@ class BoardRegistry:
             boards = [self._board(i, fps[i.port], parts, stamp) for i in infos]
         return {"schema": SCHEMA, "parts": {"loaded": parts is not None}, "boards": boards}
 
+    def resolve_target(self, port: str | None, part: str | None) -> Target:
+        """The board a flash job addresses, by `port` or by the `part` name; exactly one.
+
+        A part must name exactly one attached, verified board: an unverified port could hold
+        another board than the one the name stands for. A port passes the MAC on only if verified.
+        """
+        if (port is None) == (part is None):
+            raise UnknownPort("give exactly one of port and part")
+        snap = self.snapshot()
+        listed: list[dict[str, Any]] = snap["boards"]
+        if port is not None:
+            for b in listed:
+                if b["port"] == port:
+                    ok = b["verified"]
+                    return Target(port, b["mac"] if ok else None, b["name"] if ok else None)
+            raise UnknownPort("port: not in the current listing")
+        if not snap["parts"]["loaded"]:
+            raise UnknownPort("part: the bench has no parts file")
+        found = [b for b in listed if b["verified"] and b["name"] == part]
+        if not found:
+            raise UnknownPort(
+                f"part: {part!r} is not attached or not verified; run `boards --probe`"
+            )
+        if len(found) > 1:
+            raise UnknownPort(f"part: {part!r} is ambiguous, several attached boards carry it")
+        return Target(found[0]["port"], found[0]["mac"], part)
+
     def _board(
         self, info: PortInfo, fp: Fingerprint | None, parts: dict[str, Part] | None, stamp: str
     ) -> dict[str, Any]:
@@ -521,6 +557,7 @@ __all__ = [
     "Part",
     "PortInfo",
     "ProbeOutcome",
+    "Target",
     "UnknownPort",
     "fingerprint",
     "list_ports",

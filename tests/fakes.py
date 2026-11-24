@@ -530,3 +530,15 @@ def make_image(
     for offset, data in blocks.items():
         image[offset : offset + len(data)] = data
     return bytes(image)
+
+
+def with_header(chip_id: int, at: int, size: int = 0x9000, *, base: bytes | None = None) -> bytes:
+    """An image with an app-image header at `at`: magic 0xE9 and the u16 LE chip id at `at + 12`.
+
+    0xFF elsewhere, `size` long (at least `at + 14`); `base` (e.g. a `make_image`) is used instead
+    of the 0xFF fill, so the same image can carry a partition table too.
+    """
+    image = bytearray(base if base is not None else b"\xff" * max(size, at + 14))
+    image[at] = 0xE9
+    image[at + 12 : at + 14] = chip_id.to_bytes(2, "little")
+    return bytes(image)

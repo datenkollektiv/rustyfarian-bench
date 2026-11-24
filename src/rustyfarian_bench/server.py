@@ -46,6 +46,15 @@ class SubmitRequest(BaseModel):
     image: str  # base64
 
 
+class FlashRequest(BaseModel):
+    port: str | None = Field(default=None, max_length=200)
+    part: str | None = Field(default=None, max_length=remote.NAME_MAX)
+    image: str  # base64
+    baud: int | None = Field(default=None, gt=0, le=remote.MAX_BAUD)
+    reset: Literal["rts", "dtr", "none"] | None = None
+    expect: str | None = Field(default=None, max_length=remote.EXPECT_MAX)
+
+
 def _body_budget() -> int:
     # base64 image plus a scenario that JSON may escape up to six-fold (`\\u00XX`), plus the rest.
     return MAX_IMAGE * 4 // 3 + MAX_SCENARIO * 6 + 4096
@@ -227,6 +236,37 @@ def create_app(
         submitter = str(request.scope.get("submitter", ""))
         try:
             job = remote.create_job(outbox, meta, req.scenario, image, submitter)
+        except ConfigError as e:
+            raise HTTPException(422, str(e)) from None
+        if status is not None:
+            status.job_queued(job.id)  # before submit, so the worker cannot finish it first
+        worker.submit(remote.job_path(outbox, job.id))
+        return asdict(job)
+
+    @app.post("/flash", status_code=201)
+    def post_flash(req: FlashRequest, request: Request) -> dict[str, Any]:
+        if (req.port is None) == (req.part is None):
+            raise HTTPException(422, "give exactly one of port and part")
+        image = _decode_image(req.image)
+        try:
+            target = registry.resolve_target(req.port, req.part)
+        except boards.UnknownPort as e:
+            raise HTTPException(422, str(e)) from None
+        except ConfigError:  # the reply must not reveal where the file lives
+            raise HTTPException(503, "the parts file cannot be read") from None
+        submitter = str(request.scope.get("submitter", ""))
+        try:
+            job = remote.create_flash_job(
+                outbox,
+                image,
+                port=target.port,
+                part=target.name,  # a verified port's part name too, for the kiosk and job
+                mac=target.mac,
+                baud=req.baud,
+                reset=req.reset,
+                expect=req.expect,
+                submitter=submitter,
+            )
         except ConfigError as e:
             raise HTTPException(422, str(e)) from None
         if status is not None:

@@ -4,7 +4,9 @@ A job is a tiny consumer repo the server writes into `outbox/<id>/`: its own `be
 (flash = `python -m rustyfarian_bench.flash_image`, which writes the uploaded `image.bin` by its
 partition table, flat when it has none) plus the uploaded scenario. The
 unchanged `run` command then runs as a child process in that directory, its output going to
-`run.log`. Stdlib only: no web framework is imported here.
+`run.log`. A flash job has no uploaded scenario: the server generates a one-step one that passes
+on the first app line after the flash, and pins the child to the target's port.
+Stdlib only: no web framework is imported here.
 """
 
 from __future__ import annotations
@@ -57,6 +59,26 @@ NAME_MAX = 80
 MAX_BAUD = 4_000_000  # far above any ESP32 console rate
 TOKEN_MIN = 32  # characters; `openssl rand -hex 32` gives 64
 
+# Flash jobs: one unattended step that waits for the first app line after the flash and reset.
+CRASH = r"Guru Meditation|panicked at|abort\(\) was called"
+# The first line that is neither a crash, ROM output (boot banner or a failed boot) nor 2nd-stage
+# bootloader output, and carries text. A crash is excluded because an `expect` match wins over
+# `reject` on the same line; `.*` before `\(\d+\)` tolerates esp-idf's ANSI colour prefix.
+APP_UP = (
+    rf"^(?!.*(?:{CRASH}))"
+    r"(?!(?:ets |Build:|configsip|clk_drv|mode:|load:|entry |SPIWP|csum|ESP-ROM:|Saved PC"
+    r"|ho \d+ tail|flash read err|ets_main|invalid header|Rebooting)"
+    r"|.*(?:rst:0x|boot:0x|waiting for download|\(\d+\) "
+    r"(?:boot(?:\.\w+)?|boot_comm|bootloader\w*|esp_image|efuse_init|flash_parts|qio_mode"
+    r"|spi_flash|heap_init):)).*[A-Za-z]{3}"
+)
+EXPECT_MAX = 200
+FLASH = "flash"  # the generated example and check name
+FLASH_BAUD = 115200
+FLASH_RESET = "rts"
+FLASH_SETTLE = 2.0  # seconds a crash loop has to show itself after the first app line
+FLASH_TIMEOUT = 30.0
+
 QUEUED, RUNNING, DONE = "queued", "running", "done"
 RESTARTED = "server restarted before the job finished"
 
@@ -102,6 +124,8 @@ class Job:
     submitter: str = ""  # the token's name; a default, so a job.json from before it still loads
     # The flash plan fixed at submit (mode and ranges); defaulted so an older job.json loads.
     flash: dict[str, Any] = field(default_factory=dict)
+    kind: str = "check"  # "flash" for a flash-only job; defaulted so an older job.json loads
+    port: str = ""  # the port a flash job is pinned to; empty for a check
 
 
 def _now() -> str:
@@ -255,8 +279,72 @@ def load_tokens(path: Path) -> dict[str, str]:
     return tokens
 
 
+def flash_scenario(expect: str = APP_UP) -> str:
+    """The generated scenario of a flash job: wait for `expect`, fail on a crash."""
+    # arm = false is load-bearing: an armed step drains the backlog (runner.py) and could eat
+    # the banner already queued. Bug 002's settle-on-open keeps the ROM lines in the backlog;
+    # APP_UP is written not to match the ROM and bootloader lines tests/test_flash_job.py lists.
+    return (
+        f"examples = [{_quoted(FLASH)}]\n"
+        "\n[[step]]\n"
+        'say = "boot banner"\n'
+        f"expect = [{_quoted(expect)}]\n"
+        f"reject = {_quoted(CRASH)}\n"
+        f"settle = {FLASH_SETTLE:g}\n"
+        "arm = false\n"
+        f"timeout = {FLASH_TIMEOUT:g}\n"
+    )
+
+
+def create_flash_job(
+    outbox: Path,
+    image: bytes,
+    *,
+    port: str,
+    part: str | None = None,
+    mac: str | None = None,
+    baud: int | None = None,
+    reset: str | None = None,
+    expect: str | None = None,
+    submitter: str = "",
+) -> Job:
+    """Queue a flash-only job on `port`; its scenario passes on the first app line after boot.
+
+    `mac` pins the board so a swap between queueing and running fails detection.
+    """
+    if not image:
+        raise ConfigError("image: is empty")
+    chip = flash_image.merged_chip(image)
+    if expect is None:
+        expect = APP_UP
+    elif (
+        not isinstance(expect, str) or not 0 < len(expect) <= EXPECT_MAX or not expect.isprintable()
+    ):
+        raise ConfigError(f"expect: expected 1 to {EXPECT_MAX} printable characters")
+    board: dict[str, Any] = {
+        "key": part or chip,
+        "chip": chip,
+        "name": part or port,
+        "baud": FLASH_BAUD if baud is None else baud,
+        "reset": FLASH_RESET if reset is None else reset,
+    }
+    if mac:
+        board["mac"] = mac
+    meta = {"board": board, "check": FLASH, "example": FLASH}
+    return create_job(
+        outbox, meta, flash_scenario(expect), image, submitter, kind="flash", port=port
+    )
+
+
 def create_job(
-    outbox: Path, meta: Mapping[str, Any], scenario_toml: str, image: bytes, submitter: str = ""
+    outbox: Path,
+    meta: Mapping[str, Any],
+    scenario_toml: str,
+    image: bytes,
+    submitter: str = "",
+    *,
+    kind: str = "check",
+    port: str = "",
 ) -> Job:
     """Validate an upload and lay it out as `outbox/<id>/`; the job is queued, not started.
 
@@ -279,6 +367,8 @@ def create_job(
         created=_now(),
         submitter=submitter,
         flash=flash_image.describe(flash),
+        kind=kind,
+        port=port,
     )
     job_dir = _make_job_dir(outbox, job)
     try:
@@ -330,11 +420,15 @@ def _populate(
         raise ConfigError(f"scenario {check} cannot run remotely: " + "; ".join(reasons))
 
 
-def child_argv(example: str, detect_timeout: float | None = None) -> list[str]:
+def child_argv(
+    example: str, detect_timeout: float | None = None, port: str | None = None
+) -> list[str]:
     """The `run` command a job executes; its cwd is the job directory, which is the repo."""
     run = ["run", example, "--unattended", "--no-build", "--no-twins"]
     if detect_timeout is not None:
         run += ["--detect-timeout", f"{detect_timeout:g}"]
+    if port:
+        run += ["--port", port]
     run.append("--unique-board")  # a shared bench never guesses between same-chip boards
     return [sys.executable, "-m", "rustyfarian_bench.cli", *run]
 
@@ -389,7 +483,8 @@ def run_job(
     if job is None:
         return
     try:
-        _run_job(job_dir, job, timeout, argv or child_argv(job.example, detect_timeout), on_proc)
+        argv = argv or child_argv(job.example, detect_timeout, job.port or None)
+        _run_job(job_dir, job, timeout, argv, on_proc)
     except Exception as e:  # the worker must go on with the next job
         with contextlib.suppress(Exception):
             _finish(job_dir, job, "error", f"{type(e).__name__}: {e}", None)

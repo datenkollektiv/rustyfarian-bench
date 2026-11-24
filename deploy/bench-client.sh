@@ -4,16 +4,17 @@ set -euo pipefail
 # Usage: deploy/bench-client.sh check [TOKEN_NAME]
 #        deploy/bench-client.sh submit REPO BOARD EXAMPLE [SUBMIT_ARGS...]
 #        deploy/bench-client.sh boards [BOARDS_ARGS...]
-# Run through `just pi-check` / `just pi-submit` / `just pi-boards`, which pass ANSIBLE and JUST.
+#        deploy/bench-client.sh flash (--port PORT | --part NAME) IMAGE [FLASH_ARGS...]
+# Run through `just pi-check` / `pi-submit` / `pi-boards` / `pi-flash`, which pass ANSIBLE and JUST.
 # The token only ever travels through pipes and submit's environment, never argv or the terminal.
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 secrets="$root/shared-secrets/bench.yaml"
 just_cmd=${JUST:-just}
 # the pinned `uvx … ansible-core` command from the justfile; split on purpose when used
-ansible_cmd=${ANSIBLE:?run this through just pi-check, pi-submit or pi-boards}
+ansible_cmd=${ANSIBLE:?run this through just pi-check, pi-submit, pi-boards or pi-flash}
 
-usage() { sed -n '3,6s/^# //p' "$0" >&2; exit 2; }
+usage() { sed -n '3,7s/^# //p' "$0" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 command=$1
 shift
@@ -64,6 +65,13 @@ case "$command" in
         value=$(token "$(first_token)")
         RUSTYFARIAN_BENCH_URL="$url" RUSTYFARIAN_BENCH_CA="$ca" RUSTYFARIAN_BENCH_TOKEN="$value" \
             "$just_cmd" --justfile "$root/justfile" boards "$@"
+        ;;
+    flash)
+        [ $# -ge 2 ] || usage  # a target (--port/--part) and the image at least
+        # decrypted first, so a failing sops stops here instead of flashing without a token
+        value=$(token "$(first_token)")
+        RUSTYFARIAN_BENCH_URL="$url" RUSTYFARIAN_BENCH_CA="$ca" RUSTYFARIAN_BENCH_TOKEN="$value" \
+            "$just_cmd" --justfile "$root/justfile" flash "$@"
         ;;
     *)
         usage

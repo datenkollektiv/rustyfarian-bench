@@ -4,7 +4,7 @@ The snapshot is the surface as of v0.7.0. Changes must be additive: the only
 allowed additions are `--status-file` and `--parts` on `serve` and a `kiosk` subcommand, and
 both are optional here so the guard can land before them. The `kiosk` options
 are not in the snapshot, so `test_kiosk_has_its_options` pins them. Anything
-else that appears or disappears fails.
+else that appears or disappears fails. `flash` (remote flash only v1) is pinned in the snapshot.
 """
 
 import argparse
@@ -34,6 +34,7 @@ SNAPSHOT_OPTIONS: dict[str, set[str]] = {
     },
     "submit": {"--bench", "--check", "--image", "--no-build", "--wait"},
     "boards": {"--bench", "--probe", "--port", "--json"},
+    "flash": {"--bench", "--port", "--part", "--baud", "--reset", "--expect", "--wait"},
     "serve": {
         "--host",
         "--port",
@@ -51,6 +52,7 @@ SNAPSHOT_POSITIONALS: dict[str, list[str]] = {
     "run": ["target", "check"],
     "submit": ["board", "example"],
     "boards": [],
+    "flash": ["image"],
     "serve": [],
     "list": [],
     "detect": [],

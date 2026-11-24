@@ -478,6 +478,27 @@ barcode = true                   # read by the label printer; the bench ignores 
 - A file that breaks while `serve` runs makes the board list answer 503; jobs are not affected.
 - `deploy/ansible/parts.example.toml` shows the format with made-up MACs.
 
+### Flashing a board
+
+```bash
+just flash --part bench-esp32c3-mini1 tmp/app.bin --wait   # or: rustyfarian-bench flash ...
+just flash --port /dev/ttyUSB0 tmp/app.bin                  # a port as `boards` lists it
+```
+
+- `flash` writes a merged image onto one board without a check, and passes once the app's first line shows after the reset.
+- It needs no consumer repo, and uses the same URL, token and CA variables as `submit`.
+- `--part NAME` picks a board by its `parts.toml` name; that board must be verified, so a replugged one needs `boards --probe` first.
+- `--port PORT` must be in the current board list; a verified MAC on it is pinned, so a board swapped while the job waits fails it.
+- The image must be merged, with a partition table at `0x8000`; a bare app image is refused before upload.
+- The chip comes from the image's bootloader header, at `0x0`, `0x1000` (esp32, esp32s2) or `0x2000` (esp32c5, esp32p4); detection checks it against the board.
+- The boot line is the first that is neither ROM output, 2nd-stage bootloader output nor a panic.
+- `--expect REGEX` waits for another line; a line it matches passes even if it reports a panic.
+- A panic (`Guru Meditation`, `panicked at`, `abort() was called`) before the boot line or within 2 s after it fails the job.
+- `--baud` (default 115200) and `--reset` (default `rts`) fit odd boards; with `--reset none` the boot output comes before the port opens, so only an app that keeps printing passes.
+- The job is written like a check's: by the partition table, so NVS survives.
+- It queues with the checks, shows on the kiosk, and keeps its `run.log` and a `results.jsonl` row in the outbox.
+- Exit codes follow `submit`.
+
 ### The image
 
 - The image is the merged flash from `0x0`: bootloader, partition table at `0x8000` and app.
@@ -532,6 +553,8 @@ outbox/20261112-093000-a1b2c3/
 - `outbox/` is kept forever, and an image can hold Wi-Fi credentials, so clear the outbox yourself.
 - `GET /jobs/<id>?offset=N` returns the job and the log from byte `N`.
 - `POST /jobs` takes a JSON body with the scenario and the base64 image, and answers with the job, `submitter` included.
+- `POST /flash` takes `port` or `part`, the base64 `image` and optional `baud`, `reset` and `expect`, and answers with the job.
+- A job's `kind` is `check` or `flash`; a flash job's `port` is the port it was queued for, and its board, check and example are the part name or chip, `flash` and `flash`.
 - A job's `flash` is `{"mode": "segments" | "flat", "ops": [{"kind": "write" | "erase", "offset", "size", "label"}]}`, offsets and sizes as hex strings, fixed when the job is queued.
 
 ### The kiosk panel

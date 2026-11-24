@@ -24,6 +24,12 @@ That workaround bypasses the job queue, the port lock and the kiosk.
 | New `POST /flash`; same queue, outbox and `GET /jobs/{id}` | `SubmitRequest` stays unchanged | A `kind` field on `POST /jobs` |
 | Client `rustyfarian-bench flash`, `just flash` and `just pi-flash` | Same URL, token and CA handling as `submit` and `boards` | `submit --flash-only`, which needs a repo and an example |
 | The kiosk shows a flash job like any other job | The panel tells who holds the board | Hide it like a probe |
+| A flash job is a generated one-step scenario run by the unchanged `run` child with `--port` | Reuses detection, the bug 002 settle, `results.jsonl` and the kiosk's step follower | A separate flash-and-monitor child |
+| App up = the first line that is neither ROM nor 2nd-stage bootloader output (`remote.APP_UP`) | Covers esp-idf (`cpu_start:`) and esp-hal (`INFO - …`) without a per-framework banner | One banner regex per framework |
+| The step has `arm = false`, with a crash `reject` for 2 s after the match | Arming drains the backlog that holds the banner; a crash loop must not pass | Arm like a check step; pass on the match alone |
+| A verified MAC on the target port is pinned in the job's `bench.toml` | A board swapped while the job waits fails detection | Record a fingerprint in the job |
+| A flash job needs a merged image with a partition table | A bare app image carries the same header at 0x0, and a flat write would replace the bootloader | Flash a bare app image flat |
+| App up never matches a crash or a ROM boot-failure line | An `expect` match wins over `reject` on the same line, and a blank-flash board must not pass | Rely on `reject` alone |
 
 ## Constraints
 - `POST /jobs`, `GET /jobs/{id}` and the TOML schema stay backwards compatible.
@@ -39,17 +45,18 @@ That workaround bypasses the job queue, the port lock and the kiosk.
 - Uploading an NVS image; that is NVS stage 2.
 
 ## Open Questions
-- [ ] Which line counts as "app up" for both esp-idf and esp-hal images, given lore's startup-reset trap?
-- [ ] ESP32 classic: is the chip id readable from a merged image whose bootloader sits at 0x1000?
-- [ ] Does a flash job append a row to `results.jsonl`, or record only its job result?
+- [x] Which line counts as "app up"? The first line with text that is not a crash, ROM or bootloader output. It was checked against a real C3 esp-hal log, whose first match is `INFO - [app] start …`. `arm = false` keeps the banner, and the ROM lines of the startup reset never match.
+- [x] ESP32 classic: is the chip id readable from a merged image? Yes. `chip_of` tries 0x0, 0x1000 and 0x2000, and accepts a header only at its family's offset.
+- [x] Does a flash job append a row to `results.jsonl`? Yes, in the job's own `bench/<key>/`. `_run_job` takes its verdict from that row.
 - [ ] Does a native-USB S3 boot the app after the flash, or stay in download mode?
 
 ## State
 - [x] Design approved
-- [ ] Core implementation (`POST /flash`, flash child, client `flash`, recipes)
-- [ ] Tests passing (no board needed: argv, port allowlist, part resolution, boot match, timeout)
-- [ ] Documentation updated (README remote bench, CHANGELOG, `serve` API note, AGENTS.md)
+- [x] Core implementation (`POST /flash`, flash child, client `flash`, recipes)
+- [x] Tests passing (no board needed: argv, port allowlist, part resolution, boot match, timeout)
+- [x] Documentation updated (README remote bench, CHANGELOG, `serve` API note, AGENTS.md)
 - [ ] `just pi-flash --part bench-esp32c3-mini1 IMAGE` boots the snapshot on the Pi, NVS intact
 
 ## Session Log
 - 2026-11-23 — Feature doc created via /feature dialog: replace the SSH copy-and-flash workaround
+- 2026-11-24: Implemented on `main` (uncommitted). The open questions are settled except the native-USB S3. The Pi gate (`just pi-flash --part bench-esp32c3-mini1 IMAGE`) has not run.
