@@ -42,3 +42,4 @@ Source: `review-queue/rustyfarian-bench-prompt-placeholders-v1.md`, items 1 and 
 - 2026-11-10 — Feature doc created via /feature dialog from the review-queue request
 - 2026-11-10 — Implemented via workflow: say/confirm placeholders, {mac}, lacked markers, tests, README and CHANGELOG
 - 2026-11-10 — Decided: nested format fields are rejected, not collected; no rewrite of the placeholder scanner (reviewer finding)
+- 2026-11-24 — Closed without the router steps' MAC and IP seen on hardware

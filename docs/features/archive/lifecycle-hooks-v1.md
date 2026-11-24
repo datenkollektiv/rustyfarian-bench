@@ -51,3 +51,4 @@ Source: `review-queue/rustyfarian-bench-lifecycle-hooks-v1.md`; builds on `host-
 - 2026-11-09 — Feature doc created via /feature dialog from the review-queue request
 - 2026-11-09 — Implemented via workflow: setup, teardown, run, CommandRecord, tests, README and CHANGELOG
 - 2026-11-09 — Gate cleared by the consumer's C6 run; README `setup` example switched to `just mqtt-pub bench-ping 1` (review-queue finding)
+- 2026-11-24 — Closed without the consumer's `--attended` run report

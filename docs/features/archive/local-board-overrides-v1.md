@@ -53,3 +53,4 @@ Source: `review-queue/rustyfarian-bench-local-board-overrides-v1.md`, from famil
 - 2026-11-17 — Implemented via workflow (test-automator, python-pro, code-reviewer); local file read only after bench.toml parses; `just verify` 1064 passed
 - 2026-11-17 — Review fixes: MAC format checked on load, `submit` sends only the committed `mac`, `reset` kept out of the local keys
 - 2026-11-17 — Second review: a local `baud` no longer reaches `submit` either
+- 2026-11-24 — Closed without rustyfarian-power's run with MACs in `bench.local.toml`

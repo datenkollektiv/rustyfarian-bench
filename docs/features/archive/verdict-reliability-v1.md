@@ -51,3 +51,4 @@ A `pass` in `results.jsonl` means the check was observed and the board was conne
 - 2026-11-07 — Feature doc created from an external reliability review
 - 2026-11-07 — Fixes 1–4 implemented TDD (161 tests); code-review follow-ups applied; hardware run pending
 - 2026-11-07 — Pre-release and first public review: Ctrl-C/missing tool end the session, declined work is `skipped` (exit 3), duplicate board checks rejected
+- 2026-11-24 — Closed without the per-board hardware run; `RESET_GRACE` stays unmeasured

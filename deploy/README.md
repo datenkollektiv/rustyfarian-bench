@@ -486,4 +486,4 @@ Change the Wi-Fi over Ethernet: the link changes mid-run.
 The panel shows the bench's queue since v0.8.0, from the status file `serve` keeps; `docs/features/bench-kiosk-v2.md` has the design.
 The status file reserves a `maintenance` state, which the kiosk already draws, for the maintenance mode on the roadmap.
 A live log tail stays off the panel until outbox retention and the NVS work settle what a log may hold.
-A Wayland compositor on the panel stays possible, since the DRM variant makes it a KMS device; `fbcon=map:` and Chromium were weighed and left aside, see `docs/features/bench-kiosk-v1.md`.
+A Wayland compositor on the panel stays possible, since the DRM variant makes it a KMS device; `fbcon=map:` and Chromium were weighed and left aside, see `docs/features/archive/bench-kiosk-v1.md`.
