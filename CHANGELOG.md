@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-24
+
 ### Added
 
 - `GET /boards` lists the serial ports attached to the bench host with by-id path, VID:PID and USB serial; chip, MAC and name appear only for a verified MAC, with its source and time.
@@ -25,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A remote job writes the merged image by its partition table at `0x8000` (bootloader, table, trimmed `app` partitions, erased `otadata`), so NVS, `phy_init` and every other `data` partition survive the job.
 - An image without a partition table is still written flat from `0x0`, and a malformed table is refused with 422.
 - An older `serve` cannot read a `job.json` with `flash`: after a rollback, those jobs answer 404 and drop out of the kiosk history.
+- The bench host installs `rustyfarian-bench` v0.9.0 by default (`bench_version`).
 
 ## [0.8.0] - 2026-11-21
 
